@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#1f6f4a"/>
+  <!-- a paper bill with a torn bottom edge -->
+  <path fill="#ffffff" d="M156 108h200v276l-25 22-25-22-25 22-25-22-25 22-25-22-25 22-25-22z"/>
+  <rect x="188" y="156" width="136" height="20" rx="10" fill="#1f6f4a"/>
+  <rect x="188" y="206" width="136" height="20" rx="10" fill="#1f6f4a" opacity="0.55"/>
+  <rect x="188" y="256" width="136" height="20" rx="10" fill="#1f6f4a" opacity="0.55"/>
+  <rect x="252" y="314" width="72" height="26" rx="13" fill="#1f6f4a"/>
+</svg>

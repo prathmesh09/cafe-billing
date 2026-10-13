@@ -33,9 +33,11 @@ export const waitingText = (n) => (n === 1 ? '1 bill waiting to upload' : `${n} 
 const whenText = (iso) => new Date(iso).toLocaleString('en-IN',
   { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 
-export function startUi({ store, api, sync, root }) {
+export function startUi({ store, api, sync, root, arrival = 'none' }) {
   const state = {
-    view: 'billing',    // 'billing' | 'done' | 'today' | 'settings'
+    view: 'billing',    // 'billing' | 'done' | 'today' | 'settings' | 'connect'
+    connect: 'none',    // connect screen: 'none' | 'bad-code' | 'connecting' | 'connected' | 'failed'
+    installOffer: null, // the browser's "install this app" offer, when it makes one
     kitchen: null,      // which kitchen tab is open; null means the first one
     query: '',          // text in the search box
     draft: emptyDraft(),
@@ -51,6 +53,57 @@ export function startUi({ store, api, sync, root }) {
   const viewEl = root.querySelector('#view');
   const navEl = root.querySelector('.nav');
 
+  // ---------- Connect (first run, and after scanning the owner's setup code) ----------
+
+  const isInstalled = () => window.matchMedia('(display-mode: standalone)').matches;
+
+  function installHtml() {
+    if (isInstalled()) return '';
+    if (state.installOffer) {
+      return '<button type="button" class="btn btn-dark" data-action="install">Put the app on this phone</button>';
+    }
+    return '<p class="hint">To put the app on this phone: tap the ⋮ menu, then <b>Add to Home screen</b>.</p>';
+  }
+
+  function connectView() {
+    const how = `Ask the owner to open the <b>Phone setup</b> tab of the billing sheet, then scan the square with this phone's camera.`;
+    const screens = {
+      none: `
+        <p class="connect-mark">📱</p>
+        <h1>This phone is not connected yet</h1>
+        <p>${how}</p>
+        <button type="button" class="link" data-action="nav" data-view="settings">Enter the details by hand</button>`,
+      'bad-code': `
+        <p class="connect-mark">⚠️</p>
+        <h1>That setup code did not work</h1>
+        <p>${how}</p>`,
+      connecting: `
+        <p class="connect-mark">⏳</p>
+        <h1>Connecting…</h1>`,
+      connected: `
+        <p class="connect-mark">✅</p>
+        <h1>This phone is connected</h1>
+        <p>${store.getMenu().items.length} items on the menu.</p>
+        ${installHtml()}
+        <button type="button" class="btn btn-primary" data-action="nav" data-view="billing">Start billing</button>`,
+      failed: `
+        <p class="connect-mark">⚠️</p>
+        <h1>Could not connect</h1>
+        <p>${escapeHtml(errorText(state.menuError ?? 'offline'))}</p>
+        <button type="button" class="btn btn-primary" data-action="connect">Try again</button>`,
+    };
+    return `<div class="connect">${screens[state.connect]}</div>`;
+  }
+
+  async function connect() {
+    state.view = 'connect';
+    state.connect = 'connecting';
+    render();
+    await refreshMenu();
+    state.connect = state.menuError ? 'failed' : 'connected';
+    if (state.view === 'connect') render();
+  }
+
   // ---------- Settings ----------
 
   function settingsView() {
@@ -58,6 +111,14 @@ export function startUi({ store, api, sync, root }) {
     return `
       <div class="page">
         <h1>Settings</h1>
+        <div class="row">
+          <button type="button" class="btn" data-action="refresh-menu">Refresh menu</button>
+          <button type="button" class="btn" data-action="upload-now">Upload now</button>
+        </div>
+        <div id="status" class="status" aria-live="polite">${statusHtml()}</div>
+        ${state.installOffer && !isInstalled() ? '<button type="button" class="btn btn-dark wide" data-action="install">Put the app on this phone</button>' : ''}
+        <details class="advanced">
+          <summary>Advanced (owner only)</summary>
         <form id="settings-form" novalidate>
           <label class="field">Outlet name
             <input name="outlet" value="${escapeHtml(s.outlet)}" autocomplete="off">
@@ -71,11 +132,7 @@ export function startUi({ store, api, sync, root }) {
           </label>
           <button type="submit" class="btn btn-primary">Save</button>
         </form>
-        <div class="row" style="margin-top:12px">
-          <button type="button" class="btn" data-action="refresh-menu">Refresh menu</button>
-          <button type="button" class="btn" data-action="upload-now">Upload now</button>
-        </div>
-        <div id="status" class="status" aria-live="polite">${statusHtml()}</div>
+        </details>
       </div>`;
   }
 
@@ -353,7 +410,7 @@ export function startUi({ store, api, sync, root }) {
 
   // ---------- Drawing ----------
 
-  const VIEWS = { billing: billingView, done: doneView, today: todayView, settings: settingsView };
+  const VIEWS = { billing: billingView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
 
   let drawnView = null;
 
@@ -384,6 +441,7 @@ export function startUi({ store, api, sync, root }) {
       renderBilling();
       return;
     }
+    if (state.view === 'connect' && state.connect === 'connecting') return; // connect() redraws when it finishes
     render();
   }
 
@@ -428,6 +486,17 @@ export function startUi({ store, api, sync, root }) {
       state.view = 'billing';
       render();
     },
+    connect() {
+      connect();
+    },
+    async install() {
+      const offer = state.installOffer;
+      if (!offer) return;
+      state.installOffer = null;
+      offer.prompt();
+      await offer.userChoice.catch(() => {});
+      render();
+    },
     'refresh-menu'() {
       if (!saveSettingsForm()) return;
       state.settingsNote = 'Refreshing menu…';
@@ -461,6 +530,22 @@ export function startUi({ store, api, sync, root }) {
     refresh();
   });
 
-  render();
-  return { refresh, refreshMenu };
+  if (arrival === 'connected') {
+    connect();
+  } else if (arrival === 'bad-code' || !store.getSettings().scriptUrl) {
+    state.view = 'connect';
+    state.connect = arrival === 'bad-code' ? 'bad-code' : 'none';
+    render();
+  } else {
+    render();
+  }
+
+  return {
+    refresh,
+    refreshMenu,
+    offerInstall(offer) {
+      state.installOffer = offer;
+      if (state.view === 'connect' || state.view === 'settings') render();
+    },
+  };
 }

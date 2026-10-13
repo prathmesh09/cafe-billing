@@ -5,6 +5,7 @@ import { createStore } from './store.js';
 import { createApi } from './api.js';
 import { createSync } from './sync.js';
 import { startUi } from './ui.js';
+import { parseSetupHash } from './setup-link.js';
 
 const RETRY_MS = 60 * 1000;
 
@@ -48,13 +49,42 @@ try {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 
-const ui = startUi({ store, api, sync, root: document.getElementById('app') });
+// A phone that scanned the owner's setup code arrives with everything it needs after
+// the # in the address. Save it, then take it out of the address bar straight away.
+let arrival = 'none'; // 'none' | 'connected' | 'bad-code'
+if (window.location.hash.startsWith('#c=')) {
+  const fromCode = parseSetupHash(window.location.hash);
+  arrival = 'bad-code';
+  if (fromCode) {
+    try {
+      store.saveSettings(fromCode);
+      arrival = 'connected';
+    } catch {
+      // storage refused; the connect screen will say so
+    }
+  }
+  window.history.replaceState(null, '', window.location.pathname + window.location.search);
+}
+
+const ui = startUi({ store, api, sync, root: document.getElementById('app'), arrival });
+
+// If the app is already open in this tab when a setup code is scanned, the browser only
+// changes the part after the #. Reload so the code is read like a fresh visit.
+window.addEventListener('hashchange', () => {
+  if (window.location.hash.startsWith('#c=')) window.location.reload();
+});
+
+// Chrome on Android offers a one-tap install; keep the offer so the app can show a button.
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  ui.offerInstall(event);
+});
 
 function upload() {
   sync.flush().catch(() => {}).then(() => ui.refresh());
 }
 
-if (store.getSettings().scriptUrl) ui.refreshMenu();
+if (store.getSettings().scriptUrl && arrival !== 'connected') ui.refreshMenu();
 upload();
 window.addEventListener('online', upload);
 setInterval(() => {

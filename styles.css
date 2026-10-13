@@ -309,3 +309,27 @@ h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: 
   font-size: 12px;
   font-weight: 700;
 }
+
+/* ---------- Connect ---------- */
+
+.connect {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 24px;
+  text-align: center;
+}
+
+.connect h1 { margin: 0; font-size: 26px; }
+.connect p { margin: 0; font-size: 18px; max-width: 30em; }
+.connect .btn { width: 100%; min-height: 64px; font-size: 20px; }
+.connect .connect-mark { font-size: 64px; line-height: 1; }
+.hint { color: var(--muted); }
+.link { min-height: var(--tap); border: 0; background: none; color: var(--muted); text-decoration: underline; }
+
+.advanced { margin-top: 24px; }
+.advanced summary { min-height: var(--tap); display: flex; align-items: center; color: var(--muted); font-weight: 600; cursor: pointer; }
+.btn.wide { width: 100%; margin-top: 12px; }

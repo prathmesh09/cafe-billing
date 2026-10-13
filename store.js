@@ -29,7 +29,8 @@ export function createStore(storage) {
   };
   const write = (key, value) => storage.setItem(key, JSON.stringify(value));
 
-  const readData = () => read(KEYS.data, { bills: [], queue: [], rejected: [] });
+  // `open` holds orders kept for people who pay after eating. They are not bills yet.
+  const readData = () => ({ bills: [], queue: [], rejected: [], open: [], ...read(KEYS.data, {}) });
   const writeData = (data) => write(KEYS.data, data);
 
   return {
@@ -47,8 +48,11 @@ export function createStore(storage) {
       return Math.max(0, ...numbers) + 1;
     },
 
-    recordBill(bill) {
+    // Pass openId when the bill settles an open order: the order is closed in the same
+    // write, so it can never be left open after it has been paid.
+    recordBill(bill, openId) {
       const data = readData();
+      if (openId) data.open = data.open.filter((o) => o.id !== openId);
       data.bills.push(bill);
       data.queue.push({ action: 'addBill', bill });
       writeData(data);
@@ -60,6 +64,31 @@ export function createStore(storage) {
       if (!bill) throw new Error('not_found');
       bill.status = 'Cancelled';
       data.queue.push({ action: 'cancelBill', billId });
+      writeData(data);
+    },
+
+    // Keeps an order open. A new order gets the next number (1, 2, 3 ... restarting once
+    // nothing is open); an order that is already open is updated in place.
+    holdOrder({ id, lines }, time) {
+      const data = readData();
+      const existing = data.open.find((o) => o.id === id);
+      if (existing) {
+        existing.lines = lines;
+        writeData(data);
+        return existing.id;
+      }
+      const tag = Math.max(0, ...data.open.map((o) => o.tag)) + 1;
+      const order = { id: `open-${Date.now()}-${tag}`, tag, time, lines };
+      data.open.push(order);
+      writeData(data);
+      return order.id;
+    },
+
+    getOpenOrders: () => readData().open,
+
+    dropOrder(id) {
+      const data = readData();
+      data.open = data.open.filter((o) => o.id !== id);
       writeData(data);
     },
 

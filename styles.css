@@ -333,3 +333,30 @@ h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: 
 .advanced { margin-top: 24px; }
 .advanced summary { min-height: var(--tap); display: flex; align-items: center; color: var(--muted); font-weight: 600; cursor: pointer; }
 .btn.wide { width: 100%; margin-top: 12px; }
+
+/* ---------- Open (pay later) orders ---------- */
+
+.open-orders { display: flex; gap: 8px; padding: 0 12px; overflow-x: auto; }
+.open-orders:not(:empty) { padding-top: 10px; }
+
+.chip {
+  flex: none;
+  min-height: var(--tap);
+  padding: 4px 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border: 2px solid #b7791f;
+  border-radius: 10px;
+  background: #fff4d6;
+  color: #6b4e00;
+  font-weight: 700;
+  text-align: left;
+}
+
+.chip small { font-weight: 400; }
+.chip.is-active { background: #b7791f; color: #fff; }
+
+.later { padding: 0 12px 12px; }
+.later .btn { width: 100%; }
+.pay { padding-bottom: 8px; }

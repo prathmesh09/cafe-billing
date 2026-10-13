@@ -2,7 +2,7 @@
 // and sync.js; this file only shows what they say and passes taps on to them.
 
 import { emptyDraft, lineKey, addItem, changeQty, draftTotal, localDate, randomSuffix,
-         finalizeBill, summarize } from './bill.js';
+         localTime, finalizeBill, summarize } from './bill.js';
 import { kitchens, groupByCategory, searchItems } from './menu.js';
 
 const ERROR_TEXT = {
@@ -41,6 +41,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     kitchen: null,      // which kitchen tab is open; null means the first one
     query: '',          // text in the search box
     draft: emptyDraft(),
+    openId: null,       // the open (pay later) order now on screen, if any
     lastBill: null,     // the bill shown on the Done screen
     notice: null,       // red line at the top of Billing
     openBillId: null,   // the bill expanded on Today
@@ -263,15 +264,41 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       <div class="row pay">
         <button type="button" class="btn btn-primary" data-action="pay" data-payment="Cash"${empty ? ' disabled' : ''}>Cash</button>
         <button type="button" class="btn btn-dark" data-action="pay" data-payment="Online"${empty ? ' disabled' : ''}>Online</button>
+      </div>
+      <div class="later">
+        <button type="button" class="btn" data-action="hold"${empty ? ' disabled' : ''}>Pay later (keep this order open)</button>
       </div>`;
   }
 
   const noticeHtml = () => (state.notice ? `<p class="notice" role="alert">${escapeHtml(state.notice)}</p>` : '');
 
+  // Orders kept open for people who pay after eating, as a row of buttons.
+  function openOrdersHtml() {
+    return store.getOpenOrders().map((o) => `
+      <button type="button" class="chip${o.id === state.openId ? ' is-active' : ''}" data-action="open-order" data-id="${escapeHtml(o.id)}">
+        Order ${o.tag} · ${rupees(draftTotal(o))}<small>${escapeHtml(o.time)}</small>
+      </button>`).join('');
+  }
+
+  // Puts whatever is on screen into the open orders. Returns false if the phone refused.
+  function holdDraft() {
+    if (state.draft.lines.length === 0) return true;
+    try {
+      store.holdOrder({ id: state.openId, lines: state.draft.lines }, localTime(new Date()));
+    } catch {
+      state.notice = STORAGE_FAILED;
+      return false;
+    }
+    state.draft = emptyDraft();
+    state.openId = null;
+    return true;
+  }
+
   function billingView() {
     return `
       <div class="billing">
         <div id="notice">${noticeHtml()}</div>
+        <div id="open" class="open-orders">${openOrdersHtml()}</div>
         <div id="tabs" class="tabs">${tabsHtml()}</div>
         <div class="search">
           <input id="search" type="search" placeholder="Search items" value="${escapeHtml(state.query)}"
@@ -289,6 +316,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     const lines = viewEl.querySelector('.lines');
     const scrollTop = lines ? lines.scrollTop : 0;
     viewEl.querySelector('#notice').innerHTML = noticeHtml();
+    viewEl.querySelector('#open').innerHTML = openOrdersHtml();
     viewEl.querySelector('#tabs').innerHTML = tabsHtml();
     viewEl.querySelector('#items').innerHTML = itemsHtml();
     viewEl.querySelector('#billpanel').innerHTML = billPanelHtml();
@@ -323,13 +351,14 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       return; // an empty bill: nothing to do
     }
     try {
-      store.recordBill(bill);
+      store.recordBill(bill, state.openId);
     } catch {
       state.notice = BILL_NOT_SAVED;
       renderBilling();
       return;
     }
     state.draft = emptyDraft();
+    state.openId = null;
     state.lastBill = bill;
     state.notice = null;
     state.query = '';
@@ -470,6 +499,32 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     },
     qty(el) {
       state.draft = changeQty(state.draft, el.dataset.key, Number(el.dataset.delta));
+      if (state.draft.lines.length === 0 && state.openId) {
+        try {
+          store.dropOrder(state.openId);
+        } catch {
+          state.notice = STORAGE_FAILED;
+        }
+        state.openId = null;
+      }
+      renderBilling();
+    },
+    hold() {
+      holdDraft();
+      renderBilling();
+    },
+    'open-order'(el) {
+      if (el.dataset.id === state.openId) return;
+      if (!holdDraft()) {
+        renderBilling();
+        return;
+      }
+      const order = store.getOpenOrders().find((o) => o.id === el.dataset.id);
+      if (order) {
+        state.draft = { lines: order.lines };
+        state.openId = order.id;
+      }
+      state.notice = null;
       renderBilling();
     },
     pay(el) {

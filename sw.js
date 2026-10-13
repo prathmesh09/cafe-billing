@@ -7,7 +7,7 @@
 // another address and are not GETs.
 
 // Set by `npm run stamp`. Do not edit by hand; tests/sw.test.js checks it.
-const VERSION = 'b474aff71164';
+const VERSION = '72d7ac1a15de';
 const PREFIX = 'cafe-billing-';
 const CACHE = PREFIX + VERSION;
 

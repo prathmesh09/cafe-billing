@@ -4,6 +4,7 @@
 import { emptyDraft, lineKey, addItem, changeQty, draftTotal, localDate, randomSuffix,
          localTime, finalizeBill, summarize } from './bill.js';
 import { kitchens, groupByCategory, searchItems } from './menu.js';
+import { pushAvailable, alertsOn, startPush, askForAlerts } from './push.js';
 
 const ERROR_TEXT = {
   bad_passcode: 'Passcode not accepted',
@@ -602,9 +603,16 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
         ${t.items.map((i) => `<p class="ticket-line"><b>${i.qty} ×</b> ${escapeHtml(i.item)}</p>`).join('')}
         <button type="button" class="btn btn-primary" data-action="ticket-ready" data-id="${escapeHtml(t.id)}">Ready ✓</button>
       </div>`).join('');
+    let alerts = '';
+    if (pushAvailable()) {
+      alerts = alertsOn()
+        ? '<p class="hint">🔔 Alerts on: this phone buzzes for new orders even in other apps.</p>'
+        : '<button type="button" class="btn btn-dark wide" data-action="alerts">🔔 Turn on order alerts</button>';
+    }
     return `
       <div class="page kitchen">
         <h1>${name} kitchen <small>${state.tickets.length} waiting</small></h1>
+        ${alerts}
         ${state.kitchenError ? `<p class="waiting">Cannot reach the sheet right now. Trying again…</p>` : ''}
         ${cards || '<p class="empty">No orders right now.</p>'}
       </div>`;
@@ -759,6 +767,10 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       keepScreenOn();
       render();
       refreshTickets();
+      startPush(kitchenName()).then((ready) => (ready ? askForAlerts() : false)).then(render);
+    },
+    alerts() {
+      startPush(kitchenName()).then((ready) => (ready ? askForAlerts() : false)).then(render);
     },
     'ticket-ready'(el) {
       doneTickets.add(el.dataset.id);

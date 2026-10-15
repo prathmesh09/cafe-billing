@@ -87,5 +87,13 @@ export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = ()
     return reply.orders;
   }
 
-  return { send, getMenu, getToday, getOpen };
+  // The tickets one kitchen still has to make.
+  async function getTickets(kitchen) {
+    const reply = await send({ action: 'getTickets', kitchen });
+    if (!reply.ok) throw new Error(reply.error || 'bad_response');
+    if (!Array.isArray(reply.tickets)) throw new Error('bad_response');
+    return reply.tickets;
+  }
+
+  return { send, getMenu, getToday, getOpen, getTickets };
 }

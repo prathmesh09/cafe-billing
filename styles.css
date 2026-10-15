@@ -406,3 +406,23 @@ h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: 
 .table.is-busy { border-color: #b7791f; background: #fff4d6; }
 .table.is-busy small { color: #6b4e00; font-weight: 700; }
 .picker .hint { margin-top: 16px; }
+
+/* ---------- Kitchen screen ---------- */
+
+.kitchen h1 small { font-size: 16px; color: var(--muted); font-weight: 600; }
+
+.ticket {
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 2px solid var(--ink);
+  border-radius: 14px;
+  background: var(--card);
+}
+
+.ticket-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.ticket-head strong { font-size: 24px; }
+.ticket-head span { color: var(--muted); font-size: 18px; }
+.ticket-line { margin: 6px 0; font-size: 22px; }
+.ticket .btn { width: 100%; min-height: 60px; margin-top: 10px; font-size: 20px; }
+
+.nav[hidden] { display: none; }

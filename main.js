@@ -89,13 +89,24 @@ ui.refreshToday();
 upload();
 window.addEventListener('online', upload);
 setInterval(() => {
-  if (store.queueLength() > 0) upload();
+  if (store.queueLength() > 0 || store.kitchenLength() > 0) upload();
 }, RETRY_MS);
 
 // Other phones may open or pay tables; look every 30 seconds while the app is on screen.
 setInterval(() => {
-  if (document.visibilityState === 'visible' && store.queueLength() === 0) ui.refreshOpen();
+  if (!ui.isKitchen() && document.visibilityState === 'visible' && store.queueLength() === 0) ui.refreshOpen();
 }, 30 * 1000);
+
+// A kitchen screen looks for new tickets every 8 seconds.
+setInterval(() => {
+  if (ui.isKitchen() && document.visibilityState === 'visible') ui.refreshTickets();
+}, 8 * 1000);
+
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') upload();
+  if (document.visibilityState !== 'visible') return;
+  upload();
+  if (ui.isKitchen()) {
+    ui.keepScreenOn();
+    ui.refreshTickets();
+  }
 });

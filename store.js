@@ -4,6 +4,8 @@
 // queue entry are written together or not at all. Nothing is cached in memory: every
 // call reads storage, so a failed write leaves the store's answers unchanged.
 
+import { newTickets } from './tickets.js';
+
 const KEYS = { settings: 'cb.settings', menu: 'cb.menu', sync: 'cb.sync', data: 'cb.data', sheetToday: 'cb.sheetToday' };
 const DEFAULT_SETTINGS = { outlet: 'Bhukum', scriptUrl: '', passcode: '' };
 const DEFAULT_SYNC = { lastError: null, lastSuccessAt: null };
@@ -31,6 +33,17 @@ let messageCount = 0;
 const newMid = () => `m-${Date.now()}-${(messageCount += 1)}-${Math.random().toString(36).slice(2, 7)}`;
 const tableMessage = (order) => ({ action: 'putOpen', mid: newMid(), order: { ...order } });
 const closeMessage = (orderId) => ({ action: 'closeOpen', mid: newMid(), orderId });
+const ticketMessages = (tickets) => tickets.map((ticket) => ({ action: 'addTicket', mid: newMid(), ticket }));
+const orderLabel = (o) => (o.table ? `Table ${o.table}` : `Order ${o.tag}`);
+
+// Works out which items the kitchens have not been told about yet, remembers them on the
+// order, and returns the messages that tell them.
+function sendToKitchens(order, time) {
+  const { tickets, sent } = newTickets(order.lines, order.sent ?? {}, { label: orderLabel(order), time, idPrefix: newMid() });
+  order.sent = sent;
+  return ticketMessages(tickets);
+}
+
 const orderIdOf = (m) => (m.action === 'putOpen' ? m.order.id : m.action === 'closeOpen' ? m.orderId : null);
 
 export function createStore(storage) {
@@ -41,7 +54,9 @@ export function createStore(storage) {
   const write = (key, value) => storage.setItem(key, JSON.stringify(value));
 
   // `open` holds orders kept for people who pay after eating. They are not bills yet.
-  const readData = () => ({ bills: [], queue: [], rejected: [], open: [], ...read(KEYS.data, {}) });
+  // `kitchen` is a separate queue for kitchen tickets, sent before anything else so the
+  // kitchens hear about an order as fast as possible.
+  const readData = () => ({ bills: [], queue: [], rejected: [], open: [], kitchen: [], ...read(KEYS.data, {}) });
   const writeData = (data) => write(KEYS.data, data);
 
   return {
@@ -87,10 +102,16 @@ export function createStore(storage) {
     // write, so it can never be left open after it has been paid.
     recordBill(bill, openId) {
       const data = readData();
+      const order = openId ? data.open.find((o) => o.id === openId) : null;
       if (openId) data.open = data.open.filter((o) => o.id !== openId);
       data.bills.push(bill);
       data.queue.push({ action: 'addBill', bill });
       if (openId) data.queue.push(closeMessage(openId));
+      // Whatever the kitchens have not had yet: everything for a counter bill, only the
+      // last additions for a table.
+      const label = order ? orderLabel(order) : `Bill #${bill.billNo}`;
+      const { tickets } = newTickets(bill.lines, order?.sent ?? {}, { label, time: bill.time, idPrefix: newMid() });
+      data.kitchen.push(...ticketMessages(tickets));
       writeData(data);
     },
 
@@ -119,6 +140,7 @@ export function createStore(storage) {
       if (existing) {
         existing.lines = lines;
         if (table) existing.table = table;
+        data.kitchen.push(...sendToKitchens(existing, time));
         data.queue.push(tableMessage(existing));
         writeData(data);
         return existing.id;
@@ -130,6 +152,7 @@ export function createStore(storage) {
           if (same) same.qty += line.qty;
           else atTable.lines.push({ ...line });
         });
+        data.kitchen.push(...sendToKitchens(atTable, time));
         data.queue.push(tableMessage(atTable));
         writeData(data);
         return atTable.id;
@@ -137,12 +160,20 @@ export function createStore(storage) {
       const tag = Math.max(0, ...data.open.map((o) => o.tag)) + 1;
       const order = { id: `open-${Date.now()}-${tag}`, tag, time, lines, table };
       data.open.push(order);
+      data.kitchen.push(...sendToKitchens(order, time));
       data.queue.push(tableMessage(order));
       writeData(data);
       return order.id;
     },
 
     getOpenOrders: () => readData().open,
+
+    // On a kitchen screen: a ticket made is queued as ready for the sheet.
+    markTicketReady(ticketId) {
+      const data = readData();
+      data.kitchen.push({ action: 'markReady', mid: newMid(), ticketId });
+      writeData(data);
+    },
 
     dropOrder(id) {
       const data = readData();
@@ -165,6 +196,15 @@ export function createStore(storage) {
     getBills(date) {
       const bills = readData().bills.reverse();
       return date === undefined ? bills : bills.filter((b) => b.date === date);
+    },
+
+    peekKitchen: () => readData().kitchen[0] ?? null,
+    kitchenLength: () => readData().kitchen.length,
+    dequeueKitchen(sent) {
+      const data = readData();
+      if (!sameMessage(data.kitchen[0], sent)) return;
+      data.kitchen.shift();
+      writeData(data);
     },
 
     peekQueue: () => readData().queue[0] ?? null,

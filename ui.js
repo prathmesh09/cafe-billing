@@ -47,6 +47,10 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     openBillId: null,
     showOrder: false,   // Billing shows the whole order instead of the menu
     picking: false,     // Billing shows the table picker
+    tickets: [],        // kitchen screen: tickets still to make
+    ticketsLoaded: false,
+    kitchenStarted: false,
+    kitchenError: null,
     todayError: null,   // why today's sales could not be read from the sheet   // the bill expanded on Today
     todayNotice: null,  // red line at the top of Today
     settingsNote: null, // a short line under the Settings buttons, e.g. "Saved"
@@ -89,7 +93,9 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
         <h1>This phone is connected</h1>
         <p>${store.getMenu().items.length} items on the menu.</p>
         ${installHtml()}
-        <button type="button" class="btn btn-primary" data-action="nav" data-view="billing">Start billing</button>`,
+        ${kitchenName()
+    ? `<button type="button" class="btn btn-primary" data-action="nav" data-view="kitchen">Open the ${escapeHtml(kitchenName())} kitchen screen</button>`
+    : '<button type="button" class="btn btn-primary" data-action="nav" data-view="billing">Start billing</button>'}`,
       failed: `
         <p class="connect-mark">⚠️</p>
         <h1>Could not connect</h1>
@@ -523,13 +529,96 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     sync.flush().catch(() => {}).then(refresh);
   }
 
+  // ---------- Kitchen screen ----------
+  //
+  // A phone set up from a "Kitchen setup" code shows only that kitchen's tickets, oldest
+  // first, and beeps when a new one arrives. Nothing to type, nothing to bill.
+
+  const kitchenName = () => store.getSettings().kitchen || '';
+  const doneTickets = new Set(); // marked Ready here, perhaps not yet in the sheet
+  let audio = null;
+  let wakeLock = null;
+
+  function beep() {
+    try {
+      if (audio) {
+        [0, 0.35].forEach((at) => {
+          const tone = audio.createOscillator();
+          const volume = audio.createGain();
+          tone.frequency.value = 880;
+          volume.gain.value = 0.4;
+          tone.connect(volume).connect(audio.destination);
+          tone.start(audio.currentTime + at);
+          tone.stop(audio.currentTime + at + 0.22);
+        });
+      }
+      if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+    } catch {
+      // a beep is a nice-to-have
+    }
+  }
+
+  async function keepScreenOn() {
+    try {
+      if ('wakeLock' in navigator && !wakeLock) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }
+    } catch {
+      // not every phone allows it; the screen may then turn off as usual
+    }
+  }
+
+  async function refreshTickets() {
+    if (!kitchenName() || !store.getSettings().scriptUrl) return;
+    try {
+      const tickets = (await api.getTickets(kitchenName())).filter((t) => !doneTickets.has(t.id));
+      const known = new Set(state.tickets.map((t) => t.id));
+      const fresh = tickets.some((t) => !known.has(t.id));
+      state.tickets = tickets;
+      state.kitchenError = null;
+      if (fresh && state.ticketsLoaded) beep();
+      state.ticketsLoaded = true;
+    } catch (e) {
+      state.kitchenError = e.message;
+    }
+    if (state.view === 'kitchen') render();
+  }
+
+  function kitchenView() {
+    const name = escapeHtml(kitchenName());
+    if (!state.kitchenStarted) {
+      return `
+        <div class="connect">
+          <p class="connect-mark">👨‍🍳</p>
+          <h1>${name} kitchen</h1>
+          <p>Orders taken at the counter for ${name} appear here, with a beep.</p>
+          <button type="button" class="btn btn-primary" data-action="start-kitchen">Start</button>
+        </div>`;
+    }
+    const cards = state.tickets.map((t) => `
+      <div class="ticket">
+        <div class="ticket-head"><strong>${escapeHtml(t.label)}</strong><span>${escapeHtml(t.time)}</span></div>
+        ${t.items.map((i) => `<p class="ticket-line"><b>${i.qty} ×</b> ${escapeHtml(i.item)}</p>`).join('')}
+        <button type="button" class="btn btn-primary" data-action="ticket-ready" data-id="${escapeHtml(t.id)}">Ready ✓</button>
+      </div>`).join('');
+    return `
+      <div class="page kitchen">
+        <h1>${name} kitchen <small>${state.tickets.length} waiting</small></h1>
+        ${state.kitchenError ? `<p class="waiting">Cannot reach the sheet right now. Trying again…</p>` : ''}
+        ${cards || '<p class="empty">No orders right now.</p>'}
+      </div>`;
+  }
+
   // ---------- Drawing ----------
 
-  const VIEWS = { billing: billingView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
+  const VIEWS = { kitchen: kitchenView, billing: billingView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
 
   let drawnView = null;
 
   function render() {
+    // A kitchen phone only ever shows its kitchen (or the connect and settings screens).
+    if (kitchenName() && !['connect', 'settings'].includes(state.view)) state.view = 'kitchen';
     // Redrawing the same screen (a bill opened, an upload finished) keeps its scroll place.
     const page = viewEl.querySelector('.page');
     const scrollTop = drawnView === state.view && page ? page.scrollTop : 0;
@@ -539,6 +628,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     const redrawn = viewEl.querySelector('.page');
     if (redrawn) redrawn.scrollTop = scrollTop;
     const active = state.view === 'done' ? 'billing' : state.view;
+    navEl.hidden = state.view === 'kitchen';
     navEl.innerHTML = NAV.map(([view, label]) => `
       <button type="button" class="nav-btn${view === active ? ' is-active' : ''}"
         data-action="nav" data-view="${view}">${label}</button>`).join('');
@@ -659,6 +749,28 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     connect() {
       connect();
     },
+    'start-kitchen'() {
+      try {
+        audio = new (window.AudioContext || window.webkitAudioContext)();
+      } catch {
+        audio = null;
+      }
+      state.kitchenStarted = true;
+      keepScreenOn();
+      render();
+      refreshTickets();
+    },
+    'ticket-ready'(el) {
+      doneTickets.add(el.dataset.id);
+      state.tickets = state.tickets.filter((t) => t.id !== el.dataset.id);
+      try {
+        store.markTicketReady(el.dataset.id);
+      } catch {
+        // the ticket is hidden here anyway; the sheet catches up next time
+      }
+      render();
+      sync.flush().catch(() => {});
+    },
     async install() {
       const offer = state.installOffer;
       if (!offer) return;
@@ -715,6 +827,9 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     refreshMenu,
     refreshToday,
     refreshOpen,
+    refreshTickets,
+    isKitchen: () => Boolean(kitchenName()),
+    keepScreenOn,
     offerInstall(offer) {
       state.installOffer = offer;
       if (state.view === 'connect' || state.view === 'settings') render();

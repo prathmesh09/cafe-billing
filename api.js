@@ -79,5 +79,13 @@ export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = ()
     return reply.bills;
   }
 
-  return { send, getMenu, getToday };
+  // The tables still waiting to pay, shared by every phone.
+  async function getOpen() {
+    const reply = await send({ action: 'getOpen' });
+    if (!reply.ok) throw new Error(reply.error || 'bad_response');
+    if (!Array.isArray(reply.orders)) throw new Error('bad_response');
+    return reply.orders;
+  }
+
+  return { send, getMenu, getToday, getOpen };
 }

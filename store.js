@@ -20,7 +20,18 @@ function daysBefore(date, days) {
 const billIdOf = (message) => (message.action === 'addBill' ? message.bill.id : message.billId);
 
 // Two queue entries are the same message when they do the same thing to the same bill.
-const sameMessage = (a, b) => Boolean(a && b) && a.action === b.action && billIdOf(a) === billIdOf(b);
+// Table messages carry their own id (mid), because one table is updated many times.
+const sameMessage = (a, b) => {
+  if (!a || !b || a.action !== b.action) return false;
+  if (a.mid || b.mid) return a.mid === b.mid;
+  return billIdOf(a) === billIdOf(b);
+};
+
+let messageCount = 0;
+const newMid = () => `m-${Date.now()}-${(messageCount += 1)}-${Math.random().toString(36).slice(2, 7)}`;
+const tableMessage = (order) => ({ action: 'putOpen', mid: newMid(), order: { ...order } });
+const closeMessage = (orderId) => ({ action: 'closeOpen', mid: newMid(), orderId });
+const orderIdOf = (m) => (m.action === 'putOpen' ? m.order.id : m.action === 'closeOpen' ? m.orderId : null);
 
 export function createStore(storage) {
   const read = (key, fallback) => {
@@ -79,6 +90,7 @@ export function createStore(storage) {
       if (openId) data.open = data.open.filter((o) => o.id !== openId);
       data.bills.push(bill);
       data.queue.push({ action: 'addBill', bill });
+      if (openId) data.queue.push(closeMessage(openId));
       writeData(data);
     },
 
@@ -107,6 +119,7 @@ export function createStore(storage) {
       if (existing) {
         existing.lines = lines;
         if (table) existing.table = table;
+        data.queue.push(tableMessage(existing));
         writeData(data);
         return existing.id;
       }
@@ -117,12 +130,14 @@ export function createStore(storage) {
           if (same) same.qty += line.qty;
           else atTable.lines.push({ ...line });
         });
+        data.queue.push(tableMessage(atTable));
         writeData(data);
         return atTable.id;
       }
       const tag = Math.max(0, ...data.open.map((o) => o.tag)) + 1;
       const order = { id: `open-${Date.now()}-${tag}`, tag, time, lines, table };
       data.open.push(order);
+      data.queue.push(tableMessage(order));
       writeData(data);
       return order.id;
     },
@@ -132,6 +147,18 @@ export function createStore(storage) {
     dropOrder(id) {
       const data = readData();
       data.open = data.open.filter((o) => o.id !== id);
+      data.queue.push(closeMessage(id));
+      writeData(data);
+    },
+
+    // Takes the sheet's list of open tables (shared by every phone). Tables changed or
+    // closed on this phone but not yet uploaded keep this phone's version.
+    mergeSheetOpen(sheetOrders) {
+      const data = readData();
+      const pending = new Set(data.queue.map(orderIdOf).filter(Boolean));
+      const mine = data.open.filter((o) => pending.has(o.id));
+      const fromSheet = sheetOrders.filter((o) => !pending.has(o.id));
+      data.open = [...fromSheet, ...mine];
       writeData(data);
     },
 

@@ -330,7 +330,9 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       </button>`).join('');
   }
 
-  // Puts whatever is on screen into the open orders. Returns false if the phone refused.
+  // Puts whatever is on screen into the open orders and sends it to the sheet straight
+  // away, so other phones see the table and a reset cannot lose it. Returns false if the
+  // phone refused to save it.
   function holdDraft(table) {
     if (state.draft.lines.length === 0) return true;
     try {
@@ -341,6 +343,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     }
     state.draft = emptyDraft();
     state.openId = null;
+    sync.flush().catch(() => {}).then(refresh);
     return true;
   }
 
@@ -441,6 +444,19 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
           <span class="bill-text">${escapeHtml(head)}</span>${cancelled ? '<span class="tag">Cancelled</span>' : ''}
         </button>${body}
       </div>`;
+  }
+
+  // Fetches the open tables from the sheet, so every phone shows the same tables and a
+  // wiped phone gets them back. Only the menu and table screens are redrawn: an order
+  // someone is working on is never swapped out from under them.
+  async function refreshOpen() {
+    if (!store.getSettings().scriptUrl) return;
+    try {
+      store.mergeSheetOpen(await api.getOpen());
+    } catch {
+      return; // offline or not reachable: keep what this phone has
+    }
+    if (state.view === 'billing' && !state.showOrder) renderBilling();
   }
 
   // Fetches today's bills from the sheet, so every phone shows the same sales and a
@@ -573,6 +589,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       if (state.draft.lines.length === 0 && state.openId) {
         try {
           store.dropOrder(state.openId);
+          sync.flush().catch(() => {}).then(refresh);
         } catch {
           state.notice = STORAGE_FAILED;
         }
@@ -697,6 +714,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     refresh,
     refreshMenu,
     refreshToday,
+    refreshOpen,
     offerInstall(offer) {
       state.installOffer = offer;
       if (state.view === 'connect' || state.view === 'settings') render();

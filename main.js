@@ -81,7 +81,7 @@ window.addEventListener('beforeinstallprompt', (event) => {
 });
 
 function upload() {
-  sync.flush().catch(() => {}).then(() => ui.refresh());
+  sync.flush().catch(() => {}).then(() => ui.refresh()).then(() => ui.refreshOpen());
 }
 
 if (store.getSettings().scriptUrl && arrival !== 'connected') ui.refreshMenu();
@@ -91,3 +91,11 @@ window.addEventListener('online', upload);
 setInterval(() => {
   if (store.queueLength() > 0) upload();
 }, RETRY_MS);
+
+// Other phones may open or pay tables; look every 30 seconds while the app is on screen.
+setInterval(() => {
+  if (document.visibilityState === 'visible' && store.queueLength() === 0) ui.refreshOpen();
+}, 30 * 1000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') upload();
+});

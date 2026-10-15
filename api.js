@@ -71,5 +71,13 @@ export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = ()
     return reply.items;
   }
 
-  return { send, getMenu };
+  // Today's bills for one outlet, from every phone, as the sheet has them.
+  async function getToday(date, outlet) {
+    const reply = await send({ action: 'getToday', date, outlet });
+    if (!reply.ok) throw new Error(reply.error || 'bad_response');
+    if (!Array.isArray(reply.bills)) throw new Error('bad_response');
+    return reply.bills;
+  }
+
+  return { send, getMenu, getToday };
 }

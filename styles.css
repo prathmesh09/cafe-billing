@@ -360,3 +360,49 @@ h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: 
 .later { padding: 0 12px 12px; }
 .later .btn { width: 100%; }
 .pay { padding-bottom: 8px; }
+
+/* ---------- Order bar, order screen, table picker ---------- */
+
+#orderbar { border-top: 1px solid var(--line); background: var(--card); padding: 8px 12px; }
+
+.orderbar {
+  width: 100%;
+  min-height: 56px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.orderbar.is-empty { background: var(--bg); color: var(--muted); font-weight: 600; justify-content: center; }
+
+.order-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; }
+.order-head strong { font-size: 18px; }
+.order-lines { padding: 0; }
+
+.tables { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+
+.table {
+  min-height: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.table strong { font-size: 24px; }
+.table small { color: var(--muted); }
+.table.is-busy { border-color: #b7791f; background: #fff4d6; }
+.table.is-busy small { color: #6b4e00; font-weight: 700; }
+.picker .hint { margin-top: 16px; }

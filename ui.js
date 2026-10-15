@@ -44,7 +44,10 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     openId: null,       // the open (pay later) order now on screen, if any
     lastBill: null,     // the bill shown on the Done screen
     notice: null,       // red line at the top of Billing
-    openBillId: null,   // the bill expanded on Today
+    openBillId: null,
+    showOrder: false,   // Billing shows the whole order instead of the menu
+    picking: false,     // Billing shows the table picker
+    todayError: null,   // why today's sales could not be read from the sheet   // the bill expanded on Today
     todayNotice: null,  // red line at the top of Today
     settingsNote: null, // a short line under the Settings buttons, e.g. "Saved"
     menuError: null,    // error code from the last menu refresh, if it failed
@@ -243,8 +246,27 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       <div class="grid">${group.items.map((i) => itemButton(i, qtyByKey, false)).join('')}</div>`).join('');
   }
 
-  function billPanelHtml() {
-    const empty = state.draft.lines.length === 0;
+  // Your tables: 9 on the ground floor (G1-G9) and 4 on the first floor (F1-F4).
+  const FLOORS = [['Ground floor', 'G', 9], ['First floor', 'F', 4]];
+
+  const openOrder = () => store.getOpenOrders().find((o) => o.id === state.openId) ?? null;
+  const orderName = (o) => (o.table ? `Table ${o.table}` : `Order ${o.tag}`);
+
+  // The bar under the menu. Tapping it shows the whole order and the pay buttons.
+  function orderBarHtml() {
+    const count = state.draft.lines.reduce((n, l) => n + l.qty, 0);
+    const current = openOrder();
+    const label = current ? `${orderName(current)} · ` : '';
+    if (count === 0) return `<div class="orderbar is-empty">${label}Tap items to add them</div>`;
+    return `
+      <button type="button" class="orderbar" data-action="show-order">
+        <span>${label}${count} item${count === 1 ? '' : 's'}</span>
+        <strong>${rupees(draftTotal(state.draft))} · View order ›</strong>
+      </button>`;
+  }
+
+  function orderView() {
+    const current = openOrder();
     const lines = state.draft.lines.map((l) => {
       const key = escapeHtml(lineKey(l));
       return `
@@ -258,15 +280,43 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
           <span class="line-amount">${rupees(l.qty * l.price)}</span>
         </div>`;
     }).join('');
+    const empty = state.draft.lines.length === 0;
     return `
-      <div class="lines">${lines}</div>
-      <div class="total"><span>Total</span> <strong>${rupees(draftTotal(state.draft))}</strong></div>
-      <div class="row pay">
-        <button type="button" class="btn btn-primary" data-action="pay" data-payment="Cash"${empty ? ' disabled' : ''}>Cash</button>
-        <button type="button" class="btn btn-dark" data-action="pay" data-payment="Online"${empty ? ' disabled' : ''}>Online</button>
-      </div>
-      <div class="later">
-        <button type="button" class="btn" data-action="hold"${empty ? ' disabled' : ''}>Pay later (keep this order open)</button>
+      <div class="billing">
+        <div id="notice">${noticeHtml()}</div>
+        <div class="order-head">
+          <button type="button" class="btn" data-action="hide-order">‹ Add more items</button>
+          <strong>${current ? orderName(current) : 'New order'}</strong>
+        </div>
+        <div class="page order-lines">${empty ? '<p class="empty">No items in this order.</p>' : lines}</div>
+        <div class="billpanel">
+          <div class="total"><span>Total</span> <strong>${rupees(draftTotal(state.draft))}</strong></div>
+          <div class="row pay">
+            <button type="button" class="btn btn-primary" data-action="pay" data-payment="Cash"${empty ? ' disabled' : ''}>Cash</button>
+            <button type="button" class="btn btn-dark" data-action="pay" data-payment="Online"${empty ? ' disabled' : ''}>Online</button>
+          </div>
+          <div class="later">
+            <button type="button" class="btn" data-action="hold"${empty ? ' disabled' : ''}>${current && current.table ? `Pay later (keep Table ${current.table} open)` : 'Pay later (choose table)'}</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function tablePickerView() {
+    const busy = new Map(store.getOpenOrders().filter((o) => o.table).map((o) => [o.table, o]));
+    return `
+      <div class="page picker">
+        <h1>Which table?</h1>
+        ${FLOORS.map(([name, letter, count]) => `
+          <h2>${name}</h2>
+          <div class="tables">
+            ${Array.from({ length: count }, (_, i) => `${letter}${i + 1}`).map((t) => `
+              <button type="button" class="table${busy.has(t) ? ' is-busy' : ''}" data-action="pick-table" data-table="${t}">
+                <strong>${t}</strong><small>${busy.has(t) ? rupees(draftTotal(busy.get(t))) : 'free'}</small>
+              </button>`).join('')}
+          </div>`).join('')}
+        <p class="hint">A table that already has an order gets these items added to it.</p>
+        <button type="button" class="btn wide" data-action="cancel-pick">Back</button>
       </div>`;
   }
 
@@ -276,15 +326,15 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
   function openOrdersHtml() {
     return store.getOpenOrders().map((o) => `
       <button type="button" class="chip${o.id === state.openId ? ' is-active' : ''}" data-action="open-order" data-id="${escapeHtml(o.id)}">
-        Order ${o.tag} · ${rupees(draftTotal(o))}<small>${escapeHtml(o.time)}</small>
+        ${escapeHtml(orderName(o))} · ${rupees(draftTotal(o))}<small>${escapeHtml(o.time)}</small>
       </button>`).join('');
   }
 
   // Puts whatever is on screen into the open orders. Returns false if the phone refused.
-  function holdDraft() {
+  function holdDraft(table) {
     if (state.draft.lines.length === 0) return true;
     try {
-      store.holdOrder({ id: state.openId, lines: state.draft.lines }, localTime(new Date()));
+      store.holdOrder({ id: state.openId, lines: state.draft.lines, table }, localTime(new Date()));
     } catch {
       state.notice = STORAGE_FAILED;
       return false;
@@ -295,6 +345,8 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
   }
 
   function billingView() {
+    if (state.picking) return tablePickerView();
+    if (state.showOrder) return orderView();
     return `
       <div class="billing">
         <div id="notice">${noticeHtml()}</div>
@@ -305,33 +357,22 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
             autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search items">
         </div>
         <div id="items" class="items">${itemsHtml()}</div>
-        <div id="billpanel" class="billpanel">${billPanelHtml()}</div>
+        <div id="orderbar">${orderBarHtml()}</div>
       </div>`;
   }
 
-  // Redraws everything on Billing except the search box, so typing is never interrupted.
-  // The list of bill lines keeps its scroll place: a second tap on − or + must land on the
-  // same line as the first.
+  // On the menu, redraws everything except the search box, so typing is never
+  // interrupted. The order and table screens are simply redrawn.
   function renderBilling() {
-    const lines = viewEl.querySelector('.lines');
-    const scrollTop = lines ? lines.scrollTop : 0;
+    if (state.view !== 'billing' || state.showOrder || state.picking || !viewEl.querySelector('#items')) {
+      render();
+      return;
+    }
     viewEl.querySelector('#notice').innerHTML = noticeHtml();
     viewEl.querySelector('#open').innerHTML = openOrdersHtml();
     viewEl.querySelector('#tabs').innerHTML = tabsHtml();
     viewEl.querySelector('#items').innerHTML = itemsHtml();
-    viewEl.querySelector('#billpanel').innerHTML = billPanelHtml();
-    viewEl.querySelector('.lines').scrollTop = scrollTop;
-  }
-
-  // Scrolls the bill list just far enough to show the line that was added.
-  function showLine(key) {
-    const lines = viewEl.querySelector('.lines');
-    const line = [...lines.querySelectorAll('.line')].find((el) => el.dataset.key === key);
-    if (!line) return;
-    const top = line.offsetTop;
-    const bottom = top + line.offsetHeight;
-    if (top < lines.scrollTop) lines.scrollTop = top;
-    else if (bottom > lines.scrollTop + lines.clientHeight) lines.scrollTop = bottom - lines.clientHeight;
+    viewEl.querySelector('#orderbar').innerHTML = orderBarHtml();
   }
 
   // Finishing a bill. Nothing here waits: the draft is emptied and the screen changes
@@ -350,6 +391,8 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     } catch {
       return; // an empty bill: nothing to do
     }
+    const current = openOrder();
+    if (current && current.table) bill.table = current.table;
     try {
       store.recordBill(bill, state.openId);
     } catch {
@@ -359,6 +402,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     }
     state.draft = emptyDraft();
     state.openId = null;
+    state.showOrder = false;
     state.lastBill = bill;
     state.notice = null;
     state.query = '';
@@ -372,7 +416,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     return `
       <div class="done">
         <p class="done-total">${rupees(bill.total)}</p>
-        <p class="done-label">Bill #${bill.billNo} · ${bill.payment}</p>
+        <p class="done-label">Bill #${bill.billNo} · ${bill.payment}${bill.table ? ` · Table ${escapeHtml(bill.table)}` : ''}</p>
         ${store.queueLength() > 0 ? '<p class="waiting">Waiting to upload</p>' : ''}
         <button type="button" class="btn btn-primary" data-action="new-bill">New bill</button>
       </div>`;
@@ -384,7 +428,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     const cancelled = bill.status === 'Cancelled';
     const open = bill.id === state.openBillId;
     const id = escapeHtml(bill.id);
-    const head = `#${bill.billNo} · ${bill.time} · ${bill.payment} · ${rupees(bill.total)}`;
+    const head = `#${bill.billNo} · ${bill.time} · ${bill.payment} · ${rupees(bill.total)}${bill.table ? ` · ${bill.table}` : ''}`;
     const body = !open ? '' : `
       <div class="bill-body">
         ${bill.lines.map((l) => `
@@ -399,13 +443,39 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       </div>`;
   }
 
+  // Fetches today's bills from the sheet, so every phone shows the same sales and a
+  // wiped phone carries on with the right bill numbers.
+  async function refreshToday() {
+    if (!store.getSettings().scriptUrl) return;
+    const date = localDate(new Date());
+    try {
+      const bills = await api.getToday(date, store.getSettings().outlet);
+      store.saveSheetToday(date, bills, new Date().toISOString());
+      state.todayError = null;
+    } catch (e) {
+      state.todayError = e.message;
+    }
+    if (state.view === 'today') render();
+  }
+
+  function todaySourceHtml(date) {
+    const sheet = store.getSheetToday(date);
+    if (state.todayError) {
+      return `<p class="waiting">Showing this phone only. ${escapeHtml(errorText(state.todayError))}</p>`;
+    }
+    if (!sheet) return '<p class="hint">Loading sales from the sheet…</p>';
+    return `<p class="hint">All phones · updated ${escapeHtml(whenText(sheet.fetchedAt))}</p>`;
+  }
+
   function todayView() {
-    const bills = store.getBills(localDate(new Date()));
+    const date = localDate(new Date());
+    const bills = store.todayBills(date);
     const sum = summarize(bills);
     const waiting = store.queueLength();
     return `
       <div class="page">
         <h1>Today</h1>
+        ${todaySourceHtml(date)}
         ${state.todayNotice ? `<p class="notice" role="alert">${escapeHtml(state.todayNotice)}</p>` : ''}
         ${waiting > 0 ? `<p class="waiting">${waitingText(waiting)}</p>` : ''}
         <div class="stats">
@@ -424,7 +494,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
   }
 
   function cancelBill(id) {
-    const bill = store.getBills().find((b) => b.id === id);
+    const bill = store.todayBills(localDate(new Date())).find((b) => b.id === id);
     if (!bill || bill.status === 'Cancelled') return;
     if (!window.confirm(`Cancel bill #${bill.billNo} for ${rupees(bill.total)}?`)) return;
     try {
@@ -479,6 +549,8 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
   const actions = {
     nav(el) {
       state.view = el.dataset.view;
+      state.picking = false;
+      if (state.view === 'today') refreshToday();
       state.settingsNote = null;
       state.todayNotice = null;
       render();
@@ -495,7 +567,6 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       state.draft = addItem(state.draft, item);
       state.notice = null;
       renderBilling();
-      showLine(el.dataset.key);
     },
     qty(el) {
       state.draft = changeQty(state.draft, el.dataset.key, Number(el.dataset.delta));
@@ -509,9 +580,34 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       }
       renderBilling();
     },
+    'show-order'() {
+      state.showOrder = true;
+      render();
+    },
+    'hide-order'() {
+      state.showOrder = false;
+      render();
+    },
     hold() {
-      holdDraft();
-      renderBilling();
+      const current = openOrder();
+      if (current && current.table) {
+        holdDraft(current.table);
+        state.showOrder = false;
+      } else {
+        state.picking = true;
+      }
+      render();
+    },
+    'pick-table'(el) {
+      if (holdDraft(el.dataset.table)) {
+        state.picking = false;
+        state.showOrder = false;
+      }
+      render();
+    },
+    'cancel-pick'() {
+      state.picking = false;
+      render();
     },
     'open-order'(el) {
       if (el.dataset.id === state.openId) return;
@@ -523,9 +619,10 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       if (order) {
         state.draft = { lines: order.lines };
         state.openId = order.id;
+        state.showOrder = true;
       }
       state.notice = null;
-      renderBilling();
+      render();
     },
     pay(el) {
       checkout(el.dataset.payment);
@@ -539,6 +636,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     },
     'new-bill'() {
       state.view = 'billing';
+      state.showOrder = false;
       render();
     },
     connect() {
@@ -598,6 +696,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
   return {
     refresh,
     refreshMenu,
+    refreshToday,
     offerInstall(offer) {
       state.installOffer = offer;
       if (state.view === 'connect' || state.view === 'settings') render();

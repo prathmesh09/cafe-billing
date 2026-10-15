@@ -85,6 +85,7 @@ function upload() {
 }
 
 if (store.getSettings().scriptUrl && arrival !== 'connected') ui.refreshMenu();
+ui.refreshToday();
 upload();
 window.addEventListener('online', upload);
 setInterval(() => {

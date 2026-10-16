@@ -49,3 +49,14 @@ export async function askForAlerts() {
   }
   return alertsOn();
 }
+
+// Runs `callback` whenever an order alert arrives while this page is open, so the kitchen
+// screen can fetch the new ticket at once instead of waiting for its next look.
+export async function onAlert(callback) {
+  if (!(await starting)) return;
+  try {
+    window.OneSignal.Notifications.addEventListener('foregroundWillDisplay', () => callback());
+  } catch {
+    // the screen still looks every few seconds
+  }
+}

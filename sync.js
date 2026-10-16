@@ -29,14 +29,18 @@ export function createSync({ store, send, now = () => new Date(), lock = (run) =
   }
 
   async function run() {
-    const kitchenError = await runKitchen();
-    if (kitchenError) {
-      store.setSyncState({ lastError: kitchenError });
-      return { sent: 0, remaining: store.queueLength(), error: kitchenError };
-    }
     let sent = 0;
     let error = null;
-    for (let message = store.peekQueue(); message; message = store.peekQueue()) {
+    for (;;) {
+      // Before every bill, any ticket waiting for a kitchen goes first, including one for
+      // an order taken while this run was already going.
+      const kitchenError = await runKitchen();
+      if (kitchenError) {
+        error = kitchenError;
+        break;
+      }
+      const message = store.peekQueue();
+      if (!message) break;
       let reply;
       try {
         reply = await send(message);
@@ -65,13 +69,26 @@ export function createSync({ store, send, now = () => new Date(), lock = (run) =
     return result ?? { sent: 0, remaining: store.queueLength(), error: null };
   }
 
+  // A flush asked for while one is running is not dropped: the run goes round once more
+  // when it ends, so nothing added at the last moment waits for the next retry.
+  let again = false;
+
   return {
     flush() {
-      if (!running) {
-        running = runIfFree().finally(() => {
-          running = null;
-        });
+      if (running) {
+        again = true;
+        return running;
       }
+      running = (async () => {
+        let result;
+        do {
+          again = false;
+          result = await runIfFree();
+        } while (again && !result.error);
+        return result;
+      })().finally(() => {
+        running = null;
+      });
       return running;
     },
   };

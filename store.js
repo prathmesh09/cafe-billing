@@ -188,7 +188,14 @@ export function createStore(storage) {
       const data = readData();
       const pending = new Set(data.queue.map(orderIdOf).filter(Boolean));
       const mine = data.open.filter((o) => pending.has(o.id));
-      const fromSheet = sheetOrders.filter((o) => !pending.has(o.id));
+      // What the kitchens already have is never forgotten: the larger count wins, so a
+      // sheet copy without it (or an older one) cannot make a table be sent again.
+      const known = new Map(data.open.map((o) => [o.id, o.sent ?? {}]));
+      const fromSheet = sheetOrders.filter((o) => !pending.has(o.id)).map((o) => {
+        const sent = { ...(o.sent ?? {}) };
+        Object.entries(known.get(o.id) ?? {}).forEach(([key, qty]) => { sent[key] = Math.max(sent[key] ?? 0, qty); });
+        return { ...o, sent };
+      });
       data.open = [...fromSheet, ...mine];
       writeData(data);
     },

@@ -4,7 +4,7 @@
 import { emptyDraft, lineKey, addItem, changeQty, draftTotal, localDate, randomSuffix,
          localTime, finalizeBill, summarize } from './bill.js';
 import { kitchens, groupByCategory, searchItems } from './menu.js';
-import { pushAvailable, alertsOn, startPush, askForAlerts } from './push.js';
+import { pushAvailable, alertsOn, startPush, askForAlerts, onAlert } from './push.js';
 import { ringTones, ringVibration } from './ring.js';
 
 const ERROR_TEXT = {
@@ -790,6 +790,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       render();
       refreshTickets();
       startPush(kitchenName()).then((ready) => (ready ? askForAlerts() : false)).then(render);
+      onAlert(() => refreshTickets());
     },
     alerts() {
       startPush(kitchenName()).then((ready) => (ready ? askForAlerts() : false)).then(render);

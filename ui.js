@@ -5,6 +5,7 @@ import { emptyDraft, lineKey, addItem, changeQty, draftTotal, localDate, randomS
          localTime, finalizeBill, summarize } from './bill.js';
 import { kitchens, groupByCategory, searchItems } from './menu.js';
 import { pushAvailable, alertsOn, startPush, askForAlerts } from './push.js';
+import { ringTones, ringVibration } from './ring.js';
 
 const ERROR_TEXT = {
   bad_passcode: 'Passcode not accepted',
@@ -533,29 +534,50 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
   // ---------- Kitchen screen ----------
   //
   // A phone set up from a "Kitchen setup" code shows only that kitchen's tickets, oldest
-  // first, and beeps when a new one arrives. Nothing to type, nothing to bill.
+  // first, and rings for five seconds when a new one arrives. Nothing to type, nothing to bill.
 
   const kitchenName = () => store.getSettings().kitchen || '';
   const doneTickets = new Set(); // marked Ready here, perhaps not yet in the sheet
   let audio = null;
   let wakeLock = null;
 
-  function beep() {
+  let ringing = [];
+
+  // About five seconds of ringing and buzzing, like a delivery partner app. Any tap on the
+  // kitchen screen stops it early.
+  function ring() {
+    stopRing();
     try {
       if (audio) {
-        [0, 0.35].forEach((at) => {
+        if (audio.state === 'suspended') audio.resume();
+        const start = audio.currentTime + 0.05;
+        ringing = ringTones().map(({ at, freq, length }) => {
           const tone = audio.createOscillator();
           const volume = audio.createGain();
-          tone.frequency.value = 880;
-          volume.gain.value = 0.4;
+          tone.type = 'square';
+          tone.frequency.value = freq;
+          volume.gain.value = 0.35;
           tone.connect(volume).connect(audio.destination);
-          tone.start(audio.currentTime + at);
-          tone.stop(audio.currentTime + at + 0.22);
+          tone.start(start + at);
+          tone.stop(start + at + length);
+          return tone;
         });
       }
-      if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+      if (navigator.vibrate) navigator.vibrate(ringVibration());
     } catch {
-      // a beep is a nice-to-have
+      // the ring is a nice-to-have; the ticket is on screen either way
+    }
+  }
+
+  function stopRing() {
+    ringing.forEach((tone) => {
+      try { tone.stop(); } catch { /* already finished */ }
+    });
+    ringing = [];
+    try {
+      if (navigator.vibrate) navigator.vibrate(0);
+    } catch {
+      // nothing to stop
     }
   }
 
@@ -578,7 +600,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       const fresh = tickets.some((t) => !known.has(t.id));
       state.tickets = tickets;
       state.kitchenError = null;
-      if (fresh && state.ticketsLoaded) beep();
+      if (fresh && state.ticketsLoaded) ring();
       state.ticketsLoaded = true;
     } catch (e) {
       state.kitchenError = e.message;
@@ -593,7 +615,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
         <div class="connect">
           <p class="connect-mark">👨‍🍳</p>
           <h1>${name} kitchen</h1>
-          <p>Orders taken at the counter for ${name} appear here, with a beep.</p>
+          <p>Orders taken at the counter for ${name} appear here, with a ring.</p>
           <button type="button" class="btn btn-primary" data-action="start-kitchen">Start</button>
         </div>`;
     }
@@ -606,7 +628,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     let alerts = '';
     if (pushAvailable()) {
       alerts = alertsOn()
-        ? '<p class="hint">🔔 Alerts on: this phone buzzes for new orders even in other apps.</p>'
+        ? '<p class="hint">🔔 Alerts on: this phone rings for new orders even in other apps.</p>'
         : '<button type="button" class="btn btn-dark wide" data-action="alerts">🔔 Turn on order alerts</button>';
     }
     return `
@@ -806,6 +828,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
   };
 
   root.addEventListener('click', (event) => {
+    if (ringing.length) stopRing();
     const el = event.target.closest('[data-action]');
     if (el && actions[el.dataset.action]) actions[el.dataset.action](el);
   });

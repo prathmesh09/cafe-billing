@@ -6,6 +6,7 @@ import { createApi } from './api.js';
 import { createSync } from './sync.js';
 import { startUi } from './ui.js';
 import { parseSetupHash } from './setup-link.js';
+import { firebaseAvailable, getFirebaseClient } from './firebase.js';
 
 const RETRY_MS = 60 * 1000;
 
@@ -26,10 +27,31 @@ function openStorage() {
 }
 
 const store = createStore(openStorage());
-const api = createApi({
+
+// One id per phone, so each phone is its own user in the live-orders database.
+function deviceId() {
+  try {
+    let id = window.localStorage.getItem('cb.device');
+    if (!id) {
+      id = Math.random().toString(36).slice(2, 12);
+      window.localStorage.setItem('cb.device', id);
+    }
+    return id;
+  } catch {
+    return '';
+  }
+}
+
+let api = null;
+const fb = firebaseAvailable() ? getFirebaseClient({
+  getPass: (kitchen) => api.getFirebasePass(kitchen, deviceId()),
+  getKitchen: () => store.getSettings().kitchen || '',
+}) : null;
+api = createApi({
   fetch: (...args) => window.fetch(...args),
   getSettings: store.getSettings,
   isOnline: () => navigator.onLine !== false,
+  fb,
 });
 
 // The app can be open twice on one phone: the home-screen app and a browser tab. Only one
@@ -66,7 +88,7 @@ if (window.location.hash.startsWith('#c=')) {
   window.history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 
-const ui = startUi({ store, api, sync, root: document.getElementById('app'), arrival });
+const ui = startUi({ store, api, sync, root: document.getElementById('app'), arrival, fb });
 
 // If the app is already open in this tab when a setup code is scanned, the browser only
 // changes the part after the #. Reload so the code is read like a fresh visit.

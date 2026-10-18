@@ -20,8 +20,23 @@ const usableItem = (i) => Boolean(i)
   && typeof i.category === 'string'
   && Number.isFinite(i.price) && i.price > 0;
 
-export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = () => true }) {
+export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = () => true, fb = null }) {
   async function send(message) {
+    if (fb) {
+      try {
+        if (message.action === 'addTicket' && message.ticket) {
+          fb.pushTickets([message.ticket]).catch(() => {});
+        } else if (message.action === 'markReady' && message.ticketId) {
+          fb.markTicketReady(message.ticketId).catch(() => {});
+        } else if (message.action === 'putOpen' && message.order) {
+          fb.saveOpenOrder(message.order).catch(() => {});
+        } else if (message.action === 'closeOpen' && message.orderId) {
+          fb.closeOpenOrder(message.orderId).catch(() => {});
+        }
+      } catch {
+        // Realtime mirror failure never blocks primary sheet upload
+      }
+    }
     const { scriptUrl, passcode } = getSettings();
     const url = scriptUrl.trim();
     if (!url) throw new Error('not_configured');
@@ -95,5 +110,13 @@ export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = ()
     return reply.tickets;
   }
 
-  return { send, getMenu, getToday, getOpen, getTickets };
+  // A sign-in pass for the live-orders database, for this phone and its kitchen.
+  async function getFirebasePass(kitchen, device) {
+    const reply = await send({ action: 'firebaseToken', kitchen, device });
+    if (!reply.ok) throw new Error(reply.error || 'bad_response');
+    if (typeof reply.token !== 'string' || !reply.token) throw new Error('bad_response');
+    return reply.token;
+  }
+
+  return { send, getMenu, getToday, getOpen, getTickets, getFirebasePass };
 }

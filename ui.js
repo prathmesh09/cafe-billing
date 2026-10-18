@@ -35,7 +35,7 @@ export const waitingText = (n) => (n === 1 ? '1 bill waiting to upload' : `${n} 
 const whenText = (iso) => new Date(iso).toLocaleString('en-IN',
   { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 
-export function startUi({ store, api, sync, root, arrival = 'none' }) {
+export function startUi({ store, api, sync, root, arrival = 'none', fb = null }) {
   const state = {
     view: 'billing',    // 'billing' | 'done' | 'today' | 'settings' | 'connect'
     connect: 'none',    // connect screen: 'none' | 'bad-code' | 'connecting' | 'connected' | 'failed'
@@ -343,11 +343,16 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
   // phone refused to save it.
   function holdDraft(table) {
     if (state.draft.lines.length === 0) return true;
+    let orderId;
     try {
-      store.holdOrder({ id: state.openId, lines: state.draft.lines, table }, localTime(new Date()));
+      orderId = store.holdOrder({ id: state.openId, lines: state.draft.lines, table }, localTime(new Date()));
     } catch {
       state.notice = STORAGE_FAILED;
       return false;
+    }
+    if (fb && orderId) {
+      const order = store.getOpenOrders().find((o) => o.id === orderId);
+      if (order) fb.saveOpenOrder(order).catch(() => {});
     }
     state.draft = emptyDraft();
     state.openId = null;
@@ -403,6 +408,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       return; // an empty bill: nothing to do
     }
     const current = openOrder();
+    const closedId = state.openId;
     if (current && current.table) bill.table = current.table;
     try {
       store.recordBill(bill, state.openId);
@@ -410,6 +416,9 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       state.notice = BILL_NOT_SAVED;
       renderBilling();
       return;
+    }
+    if (fb && closedId) {
+      fb.closeOpenOrder(closedId).catch(() => {});
     }
     state.draft = emptyDraft();
     state.openId = null;
@@ -592,20 +601,56 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     }
   }
 
+  // Tickets arrive two ways: from the sheet every 8 seconds, and from the live-orders
+  // database the moment they are made. The screen shows both lists together, oldest first,
+  // so a ticket only one of them has never flickers or rings twice.
+  const ticketLists = { sheet: [], live: [] };
+  const madeAt = (t) => Number((/^m-(\d+)-/.exec(t.id) || [])[1] || 0);
+
+  function showTickets(source, tickets) {
+    ticketLists[source] = tickets;
+    const byId = new Map();
+    [...ticketLists.sheet, ...ticketLists.live].forEach((t) => {
+      if (!doneTickets.has(t.id) && !byId.has(t.id)) byId.set(t.id, t);
+    });
+    const merged = [...byId.values()].sort((a, b) => madeAt(a) - madeAt(b));
+    const known = new Set(state.tickets.map((t) => t.id));
+    const fresh = merged.some((t) => !known.has(t.id));
+    state.tickets = merged;
+    state.kitchenError = null;
+    if (fresh && state.ticketsLoaded) ring();
+    state.ticketsLoaded = true;
+    if (state.view === 'kitchen') render();
+  }
+
+  let unsubscribeTickets = null;
+  let listening = false;
+  async function startRealtimeTickets() {
+    if (!fb || !kitchenName() || unsubscribeTickets || listening) return;
+    listening = true;
+    try {
+      unsubscribeTickets = await fb.listenTickets(kitchenName(), (tickets) => showTickets('live', tickets), () => {
+        // The listener has stopped (signed out, offline for long). The 8-second check
+        // keeps the screen working, and starts listening again.
+        unsubscribeTickets = null;
+      });
+    } catch {
+      // not signed in yet: the 8-second check keeps the screen working and tries again
+      unsubscribeTickets = null;
+    } finally {
+      listening = false;
+    }
+  }
+
   async function refreshTickets() {
     if (!kitchenName() || !store.getSettings().scriptUrl) return;
+    if (state.kitchenStarted) startRealtimeTickets();
     try {
-      const tickets = (await api.getTickets(kitchenName())).filter((t) => !doneTickets.has(t.id));
-      const known = new Set(state.tickets.map((t) => t.id));
-      const fresh = tickets.some((t) => !known.has(t.id));
-      state.tickets = tickets;
-      state.kitchenError = null;
-      if (fresh && state.ticketsLoaded) ring();
-      state.ticketsLoaded = true;
+      showTickets('sheet', await api.getTickets(kitchenName()));
     } catch (e) {
       state.kitchenError = e.message;
+      if (state.view === 'kitchen') render();
     }
-    if (state.view === 'kitchen') render();
   }
 
   function kitchenView() {
@@ -787,6 +832,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
       }
       state.kitchenStarted = true;
       keepScreenOn();
+      startRealtimeTickets();
       render();
       refreshTickets();
       startPush(kitchenName()).then((ready) => (ready ? askForAlerts() : false)).then(render);
@@ -798,6 +844,7 @@ export function startUi({ store, api, sync, root, arrival = 'none' }) {
     'ticket-ready'(el) {
       doneTickets.add(el.dataset.id);
       state.tickets = state.tickets.filter((t) => t.id !== el.dataset.id);
+      if (fb) fb.markTicketReady(el.dataset.id).catch(() => {});
       try {
         store.markTicketReady(el.dataset.id);
       } catch {

@@ -21,7 +21,10 @@ const STORAGE_FAILED = 'Could not save. Phone storage is full or blocked.';
 const BILL_NOT_SAVED = 'Bill NOT saved. Phone storage is full or blocked.';
 const NO_MENU = 'No menu yet. Connect to the internet, open Settings and press Refresh menu.';
 
-const NAV = [['billing', 'Billing'], ['today', 'Today'], ['settings', 'Settings']];
+// Settings is not in the bar: staff rarely need it. It sits behind the gear on the Running and Today screens.
+const NAV = [['billing', 'Billing'], ['running', 'Running'], ['today', 'Today']];
+
+const GEAR = '<button type="button" class="gear" data-action="nav" data-view="settings" aria-label="Settings">⚙</button>';
 
 const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -49,6 +52,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     openBillId: null,
     showOrder: false,   // Billing shows the whole order instead of the menu
     picking: false,     // Billing shows the table picker
+    moving: null,       // id of the open order being moved to another table, if any
     tickets: [],        // kitchen screen: tickets still to make
     ticketsLoaded: false,
     kitchenStarted: false,
@@ -310,21 +314,73 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       </div>`;
   }
 
+  // The table grid. For a new order it asks "Which table?"; when moving an order it asks
+  // where to, and a table that is busy says it will be joined.
   function tablePickerView() {
+    const moving = state.moving ? store.getOpenOrders().find((o) => o.id === state.moving) : null;
     const busy = new Map(store.getOpenOrders().filter((o) => o.table).map((o) => [o.table, o]));
+    const action = moving ? 'move-to' : 'pick-table';
+    const small = (t) => {
+      if (moving && t === moving.table) return 'here now';
+      return busy.has(t) ? `${rupees(draftTotal(busy.get(t)))}${moving ? ' · join' : ''}` : 'free';
+    };
     return `
       <div class="page picker">
-        <h1>Which table?</h1>
+        <h1>${moving ? `Move ${escapeHtml(orderName(moving))} to…` : 'Which table?'}</h1>
         ${FLOORS.map(([name, letter, count]) => `
           <h2>${name}</h2>
           <div class="tables">
             ${Array.from({ length: count }, (_, i) => `${letter}${i + 1}`).map((t) => `
-              <button type="button" class="table${busy.has(t) ? ' is-busy' : ''}" data-action="pick-table" data-table="${t}">
-                <strong>${t}</strong><small>${busy.has(t) ? rupees(draftTotal(busy.get(t))) : 'free'}</small>
+              <button type="button" class="table${busy.has(t) ? ' is-busy' : ''}" data-action="${action}" data-table="${t}"${moving && t === moving.table ? ' disabled' : ''}>
+                <strong>${t}</strong><small>${small(t)}</small>
               </button>`).join('')}
           </div>`).join('')}
-        <p class="hint">A table that already has an order gets these items added to it.</p>
-        <button type="button" class="btn wide" data-action="cancel-pick">Back</button>
+        <p class="hint">${moving ? 'Moving onto a busy table joins the two orders into one.' : 'A table that already has an order gets these items added to it.'}</p>
+        <button type="button" class="btn wide" data-action="${moving ? 'cancel-move' : 'cancel-pick'}">Back</button>
+      </div>`;
+  }
+
+  // ---------- Running tables ----------
+
+  // Minutes since an order's start time ("20:05"), or null when the time cannot be read.
+  function minutesSince(time) {
+    const m = /^(\d{1,2}):(\d{2})/.exec(String(time || ''));
+    if (!m) return null;
+    const now = new Date();
+    return (now.getHours() * 60 + now.getMinutes() - (Number(m[1]) * 60 + Number(m[2])) + 1440) % 1440;
+  }
+
+  const sinceText = (mins) => (mins === null ? '' : mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} h ${mins % 60} min`);
+
+  function runningCard(o) {
+    const mins = minutesSince(o.time);
+    const sent = o.sent ?? {};
+    const lines = o.lines.map((l) => {
+      const toKitchen = l.kitchen && l.kitchen !== 'Counter';
+      const flag = toKitchen ? ((sent[lineKey(l)] ?? 0) >= l.qty ? '<small class="ok">sent</small>' : '<small class="late">not sent</small>') : '';
+      return `<p class="bill-line"><span>${l.qty} × ${escapeHtml(l.item)} ${flag}</span><span>${rupees(l.qty * l.price)}</span></p>`;
+    }).join('');
+    const id = escapeHtml(o.id);
+    return `
+      <div class="run${mins !== null && mins >= 45 ? ' is-long' : ''}">
+        <div class="run-head"><strong>${escapeHtml(orderName(o))}</strong><span>${escapeHtml(o.time || '')}${mins === null ? '' : ` · ${sinceText(mins)}`}</span></div>
+        <div class="run-lines">${lines}</div>
+        <p class="run-total"><span>Total</span> <strong>${rupees(draftTotal(o))}</strong></p>
+        <div class="row">
+          <button type="button" class="btn btn-primary" data-action="run-open" data-id="${id}">Open / pay</button>
+          <button type="button" class="btn" data-action="run-move" data-id="${id}">Move table</button>
+        </div>
+      </div>`;
+  }
+
+  function runningView() {
+    if (state.moving) return tablePickerView();
+    const orders = [...store.getOpenOrders()].sort((a, b) => (minutesSince(b.time) ?? 0) - (minutesSince(a.time) ?? 0));
+    return `
+      <div class="page running">
+        <div class="page-head"><h1>Running tables <small>${orders.length}</small></h1>${GEAR}</div>
+        ${state.notice ? `<p class="notice" role="alert">${escapeHtml(state.notice)}</p>` : ''}
+        ${orders.length === 0 ? '<p class="empty">No table is running right now.</p>' : orders.map(runningCard).join('')}
       </div>`;
   }
 
@@ -474,6 +530,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       return; // offline or not reachable: keep what this phone has
     }
     if (state.view === 'billing' && !state.showOrder) renderBilling();
+    else if (state.view === 'running' && !state.moving) render();
   }
 
   // Fetches today's bills from the sheet, so every phone shows the same sales and a
@@ -507,7 +564,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     const waiting = store.queueLength();
     return `
       <div class="page">
-        <h1>Today</h1>
+        <div class="page-head"><h1>Today</h1>${GEAR}</div>
         ${todaySourceHtml(date)}
         ${state.todayNotice ? `<p class="notice" role="alert">${escapeHtml(state.todayNotice)}</p>` : ''}
         ${waiting > 0 ? `<p class="waiting">${waitingText(waiting)}</p>` : ''}
@@ -517,11 +574,12 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
           <p class="stat"><span>Online</span> <strong>${rupees(sum.online)}</strong></p>
           <p class="stat"><span>Bills</span> <strong>${sum.count}</strong></p>
         </div>
-        <h2>Top items</h2>
+        <h2>Top earners</h2>
         ${sum.topItems.length === 0 ? '<p class="empty">No bills yet today.</p>' : `
           <div class="top">${sum.topItems.map((t) => `
-            <p class="bill-line"><span>${escapeHtml(t.item)}</span><strong>${t.qty}</strong></p>`).join('')}
-          </div>`}
+            <p class="bill-line"><span>${escapeHtml(t.item)} <small>× ${t.qty}</small></span><strong>${rupees(t.amount)}</strong></p>`).join('')}
+          </div>
+          <p class="hint">Tea, cigarettes and other counter items: ${rupees(sum.counterTotal)}${sum.total > 0 ? ` (${Math.round((sum.counterTotal / sum.total) * 100)}% of sales)` : ''}</p>`}
         ${bills.length === 0 ? '' : `<h2>Bills</h2><div class="bills">${bills.map(billRow).join('')}</div>`}
       </div>`;
   }
@@ -687,7 +745,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
 
   // ---------- Drawing ----------
 
-  const VIEWS = { kitchen: kitchenView, billing: billingView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
+  const VIEWS = { kitchen: kitchenView, billing: billingView, running: runningView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
 
   let drawnView = null;
 
@@ -731,6 +789,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     nav(el) {
       state.view = el.dataset.view;
       state.picking = false;
+      state.moving = null;
       if (state.view === 'today') refreshToday();
       state.settingsNote = null;
       state.todayNotice = null;
@@ -790,6 +849,51 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     'cancel-pick'() {
       state.picking = false;
       render();
+    },
+    'run-open'(el) {
+      state.view = 'billing';
+      state.picking = false;
+      actions['open-order'](el);
+    },
+    'run-move'(el) {
+      // An order being edited on the Billing screen is saved first, so the move works on
+      // what is really on the table and the screen holds no stale copy afterwards.
+      if (state.openId === el.dataset.id) {
+        if (!holdDraft()) { render(); return; }
+        state.openId = null;
+        state.draft = emptyDraft();
+      }
+      state.moving = el.dataset.id;
+      state.notice = null;
+      render();
+    },
+    'cancel-move'() {
+      state.moving = null;
+      render();
+    },
+    'move-to'(el) {
+      const id = state.moving;
+      const table = el.dataset.table;
+      const target = store.getOpenOrders().find((o) => o.table === table && o.id !== id);
+      if (target && !window.confirm(`Table ${table} already has an order. Join them into one?`)) return;
+      let result;
+      try {
+        result = store.moveOrder(id, table, localTime(new Date()));
+      } catch (e) {
+        state.notice = e.message === 'not_found' ? 'That table was already paid or moved.' : STORAGE_FAILED;
+        state.moving = null;
+        render();
+        return;
+      }
+      if (fb) {
+        const kept = store.getOpenOrders().find((o) => o.id === result.id);
+        if (kept) fb.saveOpenOrder(kept).catch(() => {});
+        if (result.merged) fb.closeOpenOrder(id).catch(() => {});
+      }
+      state.moving = null;
+      state.notice = null;
+      render();
+      sync.flush().catch(() => {}).then(refresh);
     },
     'open-order'(el) {
       if (el.dataset.id === state.openId) return;

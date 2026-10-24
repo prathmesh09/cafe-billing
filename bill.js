@@ -69,16 +69,27 @@ export function finalizeBill(draft, { outlet, payment, now, billNo, suffix }) {
   };
 }
 
+// Top items are ranked by rupees earned, not by how many were sold: tea and cigarettes
+// would win on quantity every single day and say nothing. Counter items (made or sold at
+// the counter, no kitchen) are added up on their own line, and parcel charges are left out.
 export function summarize(bills) {
   const paid = bills.filter((b) => b.status !== 'Cancelled');
   const sum = (list) => list.reduce((total, b) => total + b.total, 0);
-  const qtyByItem = new Map();
+  const byItem = new Map();
+  let counterTotal = 0;
   for (const b of paid) {
-    for (const l of b.lines) qtyByItem.set(l.item, (qtyByItem.get(l.item) ?? 0) + l.qty);
+    for (const l of b.lines) {
+      const amount = l.amount ?? l.qty * l.price;
+      if (l.kitchen === 'Counter') { counterTotal += amount; continue; }
+      if (l.item.startsWith('Parcel')) continue;
+      const known = byItem.get(l.item) ?? { item: l.item, qty: 0, amount: 0 };
+      known.qty += l.qty;
+      known.amount += amount;
+      byItem.set(l.item, known);
+    }
   }
-  const topItems = [...qtyByItem]
-    .map(([item, qty]) => ({ item, qty }))
-    .sort((a, b) => b.qty - a.qty || a.item.localeCompare(b.item))
+  const topItems = [...byItem.values()]
+    .sort((a, b) => b.amount - a.amount || a.item.localeCompare(b.item))
     .slice(0, 5);
   return {
     total: sum(paid),
@@ -86,5 +97,6 @@ export function summarize(bills) {
     online: sum(paid.filter((b) => b.payment === 'Online')),
     count: paid.length,
     topItems,
+    counterTotal,
   };
 }

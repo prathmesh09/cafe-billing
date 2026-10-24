@@ -426,3 +426,18 @@ h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: 
 .ticket .btn { width: 100%; min-height: 60px; margin-top: 10px; font-size: 20px; }
 
 .nav[hidden] { display: none; }
+
+/* Running tables, and the gear that opens Settings */
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.page-head h1 small { color: var(--muted); font-size: 16px; font-weight: 600; margin-left: 6px; }
+.gear { min-width: var(--tap); min-height: var(--tap); border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 22px; color: var(--muted); }
+.run { margin-bottom: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.run.is-long { border-color: #b7791f; background: #fff4d6; }
+.run-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.run-head strong { font-size: 22px; }
+.run-head span { color: var(--muted); font-size: 15px; }
+.run-lines small { margin-left: 6px; font-weight: 700; }
+.run-lines small.ok { color: var(--accent); }
+.run-lines small.late { color: var(--danger); }
+.run-total { display: flex; justify-content: space-between; margin: 8px 0 10px; font-size: 18px; }
+.table:disabled { opacity: 0.45; }

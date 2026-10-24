@@ -166,6 +166,47 @@ export function createStore(storage) {
       return order.id;
     },
 
+    // Moves an open order to another table. A free table just takes the order's new name;
+    // a busy one gets the lines added to its own order and what its kitchens were sent
+    // is added up too, so nothing is cooked twice and later additions still send only the
+    // difference. Kitchens that already have the order get a notice saying where it went,
+    // because their waiting tickets still carry the old table name.
+    moveOrder(id, toTable, time) {
+      const data = readData();
+      const order = data.open.find((o) => o.id === id);
+      if (!order) throw new Error('not_found');
+      if (order.table === toTable) return { id, merged: false };
+      const was = order.table || `order ${order.tag}`;
+      const kitchensTold = [...new Set(Object.entries(order.sent ?? {})
+        .filter(([, qty]) => qty > 0).map(([key]) => key.split('|')[0]))];
+      const target = data.open.find((o) => o.id !== id && o.table === toTable);
+      let kept = order;
+      if (target) {
+        order.lines.forEach((line) => {
+          const same = target.lines.find((l) => l.item === line.item && l.kitchen === line.kitchen);
+          if (same) same.qty += line.qty;
+          else target.lines.push({ ...line });
+        });
+        target.sent = { ...(target.sent ?? {}) };
+        Object.entries(order.sent ?? {}).forEach(([key, qty]) => { target.sent[key] = (target.sent[key] ?? 0) + qty; });
+        data.open = data.open.filter((o) => o.id !== id);
+        kept = target;
+      } else {
+        order.table = toTable;
+      }
+      data.queue.push(tableMessage(kept));
+      if (target) data.queue.push(closeMessage(id));
+      const prefix = newMid();
+      kitchensTold.forEach((kitchen) => {
+        data.kitchen.push({ action: 'addTicket', mid: `${prefix}-${kitchen}`, ticket: {
+          id: `${prefix}-${kitchen}`, kitchen, label: `Table ${toTable}`, time,
+          items: [{ item: `Moved from ${was} to ${toTable}`, qty: 1 }],
+        } });
+      });
+      writeData(data);
+      return { id: kept.id, merged: Boolean(target) };
+    },
+
     getOpenOrders: () => readData().open,
 
     // On a kitchen screen: a ticket made is queued as ready for the sheet.

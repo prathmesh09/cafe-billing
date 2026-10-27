@@ -463,3 +463,10 @@ h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: 
 .recipe-remove { height: 42px; border: 0; background: none; color: var(--muted); font-size: 18px; }
 .recipe-nav { display: flex; gap: 8px; }
 .recipe-nav .btn { flex: 1; margin-top: 8px; }
+
+/* Orders */
+.order-line { display: grid; grid-template-columns: 1fr 72px 56px; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.order-line input { width: 100%; height: 40px; font-size: 18px; text-align: right; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; }
+.order-line b { text-align: right; font-size: 18px; }
+.order-add { display: grid; grid-template-columns: 1fr 64px auto; gap: 6px; align-items: center; margin-top: 8px; }
+.order-add input { width: 100%; min-width: 0; height: 40px; font-size: 16px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; }

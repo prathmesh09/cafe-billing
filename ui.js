@@ -63,6 +63,10 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     settingsNote: null, // a short line under the Settings buttons, e.g. "Saved"
     menuError: null,    // error code from the last menu refresh, if it failed
     stockItems: null,   // stock screen: this kitchen's list from the sheet, once loaded
+    stockShowAll: false, // count tab: every item, not only those due today
+    orders: null,       // open orders (proposed, approved, ordered) this phone deals with
+    ordersError: null,
+    orderEdits: {},     // order id → item → quantity typed
     stockError: null,   // why the list could not be read or the count not saved
     stockNote: null,    // "Saved" line on the stock screen
     stockSaving: false,
@@ -792,6 +796,75 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       state.stockError = e.message;
     }
     if (state.view === 'stock') render();
+    loadOrders();
+  }
+
+  // A kitchen sees its own orders; the counter (the manager) sees every kitchen's.
+  async function loadOrders() {
+    try {
+      const reply = await api.send({ action: 'getOrders', kitchen: kitchenName() || undefined });
+      if (!reply.ok || !Array.isArray(reply.orders)) throw new Error(reply.error || 'bad_response');
+      state.orders = reply.orders;
+      state.ordersError = null;
+    } catch (e) {
+      state.ordersError = e.message;
+    }
+    if (state.view === 'stock' || state.view === 'orders') render();
+  }
+
+  // What this phone has to act on: a kitchen approves its proposals; the manager places
+  // approved orders and receives ordered ones (and approves the counter's own).
+  const myTurn = (o) => o.status === 'Draft' || (kitchenName()
+    ? o.status === 'Proposed'
+    : o.status === 'Approved' || o.status === 'Ordered' || (o.status === 'Proposed' && o.kitchen === 'Counter'));
+
+  function ordersView() {
+    const list = state.orders || [];
+    const step = { Draft: ['Approved', 'Approve order'], Proposed: ['Approved', 'Approve order'], Approved: ['Ordered', 'Mark as ordered'], Ordered: ['Received', 'Received ✓'] };
+    const cards = list.map((o) => {
+      const editable = myTurn(o) && o.status !== 'Approved';
+      const edits = state.orderEdits[o.id] || {};
+      const lines = o.lines.map((l) => `
+        <div class="order-line">
+          <span class="stock-name">${escapeHtml(l.item)}${l.have !== undefined ? `<small> · have ${l.have}</small>` : ''}</span>
+          ${editable
+    ? `<input type="text" inputmode="decimal" autocomplete="off" data-order-id="${escapeHtml(o.id)}" data-order-item="${escapeHtml(l.item)}"
+              value="${escapeHtml(edits[l.item] ?? String(l.qty))}">`
+    : `<b>${l.qty}</b>`}
+          <span class="stock-unit">${escapeHtml(l.unit || '')}</span>
+        </div>`).join('');
+      const label = o.status === 'Ordered' && myTurn(o) ? 'Type what actually came, then:' : '';
+      // Staff can add anything the count did not catch, from the list or typed in.
+      const canAdd = myTurn(o) && (o.status === 'Draft' || o.status === 'Proposed');
+      const addRow = canAdd ? `
+          <div class="order-add">
+            <input type="text" list="order-items" autocomplete="off" placeholder="Add item" id="add-item-${escapeHtml(o.id)}">
+            <input type="text" inputmode="decimal" autocomplete="off" placeholder="Qty" id="add-qty-${escapeHtml(o.id)}">
+            <button type="button" class="chip" data-action="order-add-line" data-id="${escapeHtml(o.id)}">+ Add</button>
+          </div>` : '';
+      return `
+        <div class="ticket">
+          <div class="ticket-head"><strong>${escapeHtml(o.kitchen)}</strong><span>${escapeHtml(o.status)}</span></div>
+          ${label ? `<p class="hint">${label}</p>` : ''}
+          ${lines || '<p class="hint">Add the items to order below.</p>'}
+          ${addRow}
+          ${myTurn(o)
+    ? `<button type="button" class="btn btn-primary wide" data-action="order-step" data-id="${escapeHtml(o.id)}"
+              data-status="${step[o.status][0]}">${step[o.status][1]}</button>`
+    : `<p class="hint">${o.status === 'Proposed' ? `Waiting for ${escapeHtml(o.kitchen)} to approve` : `With the manager: ${escapeHtml(o.status.toLowerCase())}`}</p>`}
+        </div>`;
+    }).join('');
+    return `
+      <div class="page orders">
+        <h1>Orders</h1>
+        ${state.ordersError ? `<p class="waiting">${escapeHtml(errorText(state.ordersError))}</p>` : ''}
+        ${state.stockNote ? `<p class="hint">${escapeHtml(state.stockNote)}</p>` : ''}
+        ${cards || '<p class="empty">No open orders.</p>'}
+        <datalist id="order-items">${(state.stockItems || []).map((i) => `<option value="${escapeHtml(i.item)}">`).join('')}</datalist>
+        ${list.some((o) => (o.status === 'Draft' || o.status === 'Proposed') && o.kitchen === stockPlace()) ? ''
+    : '<button type="button" class="btn btn-dark wide" data-action="order-new">＋ Start an order</button>'}
+        <button type="button" class="btn wide" data-action="orders-back">Back to stock</button>
+      </div>`;
   }
 
   // Cigarettes are counted by brand but billed by price. Until a brand's price is set,
@@ -820,9 +893,17 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     } else if (state.stockItems.length === 0) {
       body = '<p class="empty">No stock items for this kitchen yet. The owner adds them on the "Stock items" tab.</p>';
     } else {
+      // Counting shows only what is due today (daily items, and the rest on their days).
+      const due = state.stockItems.filter((i) => i.due !== false);
+      const shown = counting && !state.stockShowAll ? due : state.stockItems;
+      const more = state.stockItems.length - due.length;
       body = `
+        ${counting ? `<p class="hint">${state.stockShowAll ? `All ${state.stockItems.length} items`
+    : `Due today: ${due.length} item${due.length === 1 ? '' : 's'}`}
+          ${more > 0 ? `<button type="button" class="chip" data-action="stock-show-all">${state.stockShowAll ? 'Only due today' : `Show all (${more} more)`}</button>` : ''}</p>` : ''}
+        ${shown.length === 0 ? '<p class="empty">Nothing to count today ✓</p>' : ''}
         <div class="stock-list">
-          ${state.stockItems.map((i) => `
+          ${shown.map((i) => `
             <label class="stock-row">
               <span class="stock-name">${escapeHtml(i.item)}${soldAsPicker(i)}</span>
               <input type="text" inputmode="decimal" autocomplete="off" data-stock-item="${escapeHtml(i.item)}"
@@ -838,6 +919,8 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     return `
       <div class="page stock">
         <h1>${escapeHtml(stockPlace())} stock</h1>
+        <button type="button" class="btn btn-dark wide" data-action="open-orders">${(state.orders || []).some(myTurn)
+    ? `📋 Orders to check: ${(state.orders || []).filter(myTurn).length}` : '📋 Orders · ＋ start one'}</button>
         ${kitchenName() && state.tickets.length ? `<button type="button" class="btn btn-primary wide stock-orders" data-action="stock-back">
           🔔 ${state.tickets.length} order${state.tickets.length === 1 ? '' : 's'} waiting: back to orders</button>` : ''}
         <div class="tabs stock-kinds">${kindButton('Count', 'Count what is left')}${kindButton('Received', 'Delivery came in')}</div>
@@ -947,7 +1030,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
 
   // ---------- Drawing ----------
 
-  const VIEWS = { kitchen: kitchenView, stock: stockView, recipes: recipesView, billing: billingView, running: runningView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
+  const VIEWS = { kitchen: kitchenView, stock: stockView, recipes: recipesView, orders: ordersView, billing: billingView, running: runningView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
 
   let drawnView = null;
 
@@ -956,7 +1039,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     if (recipeMode() && !['connect', 'settings'].includes(state.view)) {
     if (state.view !== 'recipes') loadRecipes();
     state.view = 'recipes';
-  } else if (kitchenName() && !['connect', 'settings', 'stock'].includes(state.view)) state.view = 'kitchen';
+  } else if (kitchenName() && !['connect', 'settings', 'stock', 'orders'].includes(state.view)) state.view = 'kitchen';
     // Redrawing the same screen (a bill opened, an upload finished) keeps its scroll place.
     const page = viewEl.querySelector('.page');
     const scrollTop = drawnView === state.view && page ? page.scrollTop : 0;
@@ -966,7 +1049,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     const redrawn = viewEl.querySelector('.page');
     if (redrawn) redrawn.scrollTop = scrollTop;
     const active = state.view === 'done' ? 'billing' : state.view;
-    navEl.hidden = state.view === 'kitchen' || state.view === 'recipes' || (state.view === 'stock' && Boolean(kitchenName()));
+    navEl.hidden = state.view === 'kitchen' || state.view === 'recipes' || ((state.view === 'stock' || state.view === 'orders') && Boolean(kitchenName()));
     navEl.innerHTML = NAV.map(([view, label]) => `
       <button type="button" class="nav-btn${view === active ? ' is-active' : ''}"
         data-action="nav" data-view="${view}">${label}</button>`).join('');
@@ -975,7 +1058,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   // Called when something changed in the background (an upload finished, the menu
   // arrived). Never redraws a form the person may be typing in.
   function refresh() {
-    if (state.view === 'stock' || state.view === 'recipes') return; // someone may be typing
+    if (['stock', 'recipes', 'orders'].includes(state.view)) return; // someone may be typing
     if (state.view === 'settings') {
       const status = viewEl.querySelector('#status');
       if (status) status.innerHTML = statusHtml();
@@ -1241,6 +1324,92 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       }
       if (state.view === 'stock') render();
     },
+    'stock-show-all'() {
+      state.stockShowAll = !state.stockShowAll;
+      render();
+    },
+    'open-orders'() {
+      state.view = 'orders';
+      state.stockNote = null;
+      render();
+      loadOrders();
+    },
+    'orders-back'() {
+      state.view = 'stock';
+      state.stockNote = null;
+      render();
+    },
+    'order-new'() {
+      const id = `ORD-HAND-${Date.now()}-${randomSuffix()}`;
+      state.orders = [{ id, kitchen: stockPlace(), status: 'Draft', lines: [] }, ...(state.orders || [])];
+      state.stockNote = null;
+      render();
+    },
+    'order-add-line'(el) {
+      const order = (state.orders || []).find((o) => o.id === el.dataset.id);
+      if (!order) return;
+      const name = (viewEl.querySelector(`#add-item-${CSS.escape(order.id)}`).value || '').trim().replace(/\s+/g, ' ');
+      const qty = parseQty(viewEl.querySelector(`#add-qty-${CSS.escape(order.id)}`).value);
+      if (!name || !qty) {
+        state.stockNote = 'Pick or type the item, and how many, then tap + Add.';
+        render();
+        return;
+      }
+      const known = (state.stockItems || []).find((i) => i.item.toLowerCase() === name.toLowerCase());
+      const item = known ? known.item : name;
+      const edits = state.orderEdits[order.id] || {};
+      const existing = order.lines.find((l) => l.item === item);
+      if (existing) {
+        edits[item] = String((parseQty(edits[item] ?? String(existing.qty)) || 0) + qty);
+      } else {
+        order.lines.push({ item, unit: known ? known.unit : '', qty });
+      }
+      state.orderEdits[order.id] = edits;
+      state.stockNote = null;
+      render();
+    },
+    async 'order-step'(el) {
+      const order = (state.orders || []).find((o) => o.id === el.dataset.id);
+      if (!order) return;
+      const status = el.dataset.status;
+      const edits = state.orderEdits[order.id] || {};
+      const message = { action: 'setOrder', orderId: order.id, status };
+      if (status !== 'Ordered') {
+        message.lines = order.lines.map((l) => {
+          const typed = edits[l.item];
+          const qty = typed === undefined ? l.qty : parseQty(typed);
+          return { item: l.item, unit: l.unit, qty: qty === null ? l.qty : qty };
+        });
+      }
+      if (status === 'Received') {
+        const now = new Date();
+        message.date = localDate(now);
+        message.time = localTime(now);
+      }
+      if (order.status === 'Draft' && message.lines.length === 0) {
+        state.stockNote = 'Add at least one item first.';
+        render();
+        return;
+      }
+      el.disabled = true;
+      try {
+        // An order started by hand is saved first, then approved like any other.
+        if (order.status === 'Draft') {
+          const made = await api.send({ action: 'addOrder', id: order.id, kitchen: order.kitchen, lines: message.lines.filter((l) => l.qty > 0) });
+          if (!made.ok) throw new Error(made.error || 'bad_response');
+          message.lines = message.lines.filter((l) => l.qty > 0);
+        }
+        const reply = await api.send(message);
+        if (!reply.ok) throw new Error(reply.error || 'bad_response');
+        delete state.orderEdits[order.id];
+        state.stockNote = { Approved: '✓ Approved. The manager sees it on the counter phone.',
+          Ordered: '✓ Marked as ordered.', Received: '✓ Received. Stock is updated.' }[status];
+        state.ordersError = null;
+      } catch (e) {
+        state.ordersError = e.message;
+      }
+      await loadOrders();
+    },
     'stock-back'() {
       state.view = 'kitchen';
       render();
@@ -1274,6 +1443,17 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
         keepStockDraft();
         state.stockError = null;
         state.stockNote = `Saved ✓ ${entry.lines.length} item${entry.lines.length === 1 ? '' : 's'} at ${entry.time}`;
+        if (reply.order) {
+          // The count proposes an order straight away: check it, change any number, approve.
+          state.orders = [reply.order, ...(state.orders || []).filter((o) => o.id !== reply.order.id
+            && !(o.kitchen === reply.order.kitchen && o.status === 'Proposed'))];
+          state.stockNote = `Count saved ✓ Here is what to order. Change any number, then approve.`;
+          state.stockSaving = false;
+          state.view = 'orders';
+          render();
+          return;
+        }
+        if (kind === 'Count') state.stockNote += ' · Nothing needs ordering.';
       } catch (e) {
         state.stockError = e.message;
       }
@@ -1321,6 +1501,12 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   });
 
   root.addEventListener('input', (event) => {
+    const orderId = event.target.dataset && event.target.dataset.orderId;
+    if (orderId) {
+      state.orderEdits[orderId] = state.orderEdits[orderId] || {};
+      state.orderEdits[orderId][event.target.dataset.orderItem] = event.target.value;
+      return;
+    }
     const recipeRow = event.target.dataset && event.target.dataset.recipeRow;
     if (recipeRow !== undefined) {
       const row = recipe.rows[Number(recipeRow)];

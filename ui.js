@@ -6,7 +6,7 @@ import { emptyDraft, lineKey, addItem, changeQty, draftTotal, localDate, randomS
 import { kitchens, groupByCategory, searchItems } from './menu.js';
 import { pushAvailable, alertsOn, startPush, askForAlerts, onAlert } from './push.js';
 import { ringTones, ringVibration } from './ring.js';
-import { stockEntry, loadStockDraft, saveStockDraft } from './stock.js';
+import { stockEntry, loadStockDraft, saveStockDraft, parseQty } from './stock.js';
 
 const ERROR_TEXT = {
   bad_passcode: 'Passcode not accepted',
@@ -105,7 +105,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
         <p>${store.getMenu().items.length} items on the menu.</p>
         ${installHtml()}
         ${kitchenName()
-    ? `<button type="button" class="btn btn-primary" data-action="nav" data-view="kitchen">Open the ${escapeHtml(kitchenName())} kitchen screen</button>`
+    ? `<button type="button" class="btn btn-primary" data-action="nav" data-view="kitchen">${recipeMode() ? 'Start the recipe cards' : `Open the ${escapeHtml(kitchenName())} kitchen screen`}</button>`
     : '<button type="button" class="btn btn-primary" data-action="nav" data-view="billing">Start billing</button>'}`,
       failed: `
         <p class="connect-mark">⚠️</p>
@@ -707,7 +707,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   }
 
   async function refreshTickets() {
-    if (!kitchenName() || !store.getSettings().scriptUrl) return;
+    if (!kitchenName() || recipeMode() || !store.getSettings().scriptUrl) return;
     if (state.kitchenStarted) startRealtimeTickets();
     try {
       showTickets('sheet', await api.getTickets(kitchenName()));
@@ -849,15 +849,116 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       </div>`;
   }
 
+  // ---------- Recipe cards (a phone set up with the "Recipes" link) ----------
+  //
+  // One dish per card, best sellers first: tap the stock items one plate uses, tap an
+  // amount, Save & next. Each dish is saved to the sheet the moment it is saved here.
+
+  const RECIPES = 'Recipes';
+  const recipeMode = () => store.getSettings().kitchen === RECIPES;
+  const recipe = { data: null, index: 0, pick: {}, error: null, note: null, saving: false };
+  const PRESETS = {
+    nos: [[0.5, '½'], [1, '1'], [2, '2'], [3, '3']],
+    kg: [[0.025, '25 g'], [0.05, '50 g'], [0.1, '100 g'], [0.15, '150 g']],
+    packets: [[0.25, '¼'], [0.5, '½'], [1, '1']],
+  };
+
+  const recipeDone = (d) => d.lines.length > 0 || d.saved;
+  function recipeCovered() {
+    const all = recipe.data.dishes.reduce((n, d) => n + d.sold, 0);
+    const done = recipe.data.dishes.filter(recipeDone).reduce((n, d) => n + d.sold, 0);
+    return all ? Math.round((done / all) * 100) : 0;
+  }
+  function openDish(i) {
+    recipe.index = i;
+    const dish = recipe.data.dishes[i];
+    recipe.pick = {};
+    dish.lines.forEach((l) => { recipe.pick[l.ingredient] = String(l.qty); });
+  }
+  function nextOpenDish(from) {
+    const list = recipe.data.dishes;
+    for (let k = 1; k <= list.length; k++) {
+      const i = (from + k) % list.length;
+      if (!recipeDone(list[i])) return i;
+    }
+    return (from + 1) % list.length;
+  }
+
+  async function loadRecipes() {
+    try {
+      const reply = await api.send({ action: 'getRecipeSetup' });
+      if (!reply.ok || !Array.isArray(reply.dishes)) throw new Error(reply.error || 'bad_response');
+      recipe.data = reply;
+      recipe.error = null;
+      const first = reply.dishes.findIndex((d) => !recipeDone(d));
+      openDish(first < 0 ? 0 : first);
+    } catch (e) {
+      recipe.error = e.message;
+    }
+    if (state.view === 'recipes') render();
+  }
+
+  function recipesView() {
+    if (!recipe.data) {
+      return `<div class="page recipes"><h1>Recipe cards</h1>${recipe.error
+        ? `<p class="waiting">${escapeHtml(errorText(recipe.error))}</p>
+           <button type="button" class="btn btn-dark wide" data-action="recipe-load">Try again</button>`
+        : '<p class="empty">Loading dishes…</p>'}</div>`;
+    }
+    const list = recipe.data.dishes;
+    const dish = list[recipe.index];
+    const doneCount = list.filter(recipeDone).length;
+    const covered = recipeCovered();
+    const stock = recipe.data.stock.filter((s) => s.kitchen === dish.kitchen);
+    const chips = stock.map((s) => `
+      <button type="button" class="chip${s.item in recipe.pick ? ' is-active' : ''}" data-action="recipe-pick"
+        data-item="${escapeHtml(s.item)}">${escapeHtml(s.item)}</button>`).join('');
+    const amounts = stock.filter((s) => s.item in recipe.pick).map((s) => {
+      const presets = (PRESETS[s.unit] || [[1, '1'], [2, '2']]).map(([v, label]) => `
+        <button type="button" class="chip${Number(recipe.pick[s.item]) === v ? ' is-active' : ''}" data-action="recipe-qty"
+          data-item="${escapeHtml(s.item)}" data-qty="${v}">${label}</button>`).join('');
+      return `<div class="recipe-amount"><b>${escapeHtml(s.item)}</b>
+        <div class="recipe-presets">${presets}
+          <input type="text" inputmode="decimal" data-recipe-item="${escapeHtml(s.item)}" value="${escapeHtml(recipe.pick[s.item])}"
+            placeholder="other"> <span class="stock-unit">${escapeHtml(s.unit)}</span></div></div>`;
+    }).join('');
+    return `
+      <div class="page recipes">
+        <div class="recipe-progress"><span style="width:${covered}%"></span></div>
+        <p class="hint">${doneCount} of ${list.length} dishes · ${covered}% of sales covered</p>
+        <h1>${escapeHtml(dish.dish)}</h1>
+        <p class="hint">${escapeHtml(dish.kitchen)} · sold ${dish.sold} in 30 days${recipeDone(dish) ? ' · ✓ saved' : ''}</p>
+        <p><b>1. Tap what goes into one plate</b></p>
+        <div class="recipe-chips">${chips}</div>
+        <div class="recipe-new">
+          <input type="text" id="recipe-new-name" placeholder="Not listed? e.g. Lettuce" autocomplete="off">
+          ${['nos', 'kg', 'packets', 'litre'].map((u) => `
+            <button type="button" class="chip" data-action="recipe-add" data-unit="${u}">+ ${u}</button>`).join('')}
+        </div>
+        ${amounts ? `<p><b>2. How much per plate?</b></p>${amounts}` : ''}
+        ${recipe.error ? `<p class="waiting">Not saved: ${escapeHtml(errorText(recipe.error))}</p>` : ''}
+        ${recipe.note ? `<p class="hint">${escapeHtml(recipe.note)}</p>` : ''}
+        <button type="button" class="btn btn-primary wide" data-action="recipe-save" ${recipe.saving ? 'disabled' : ''}>
+          ${recipe.saving ? 'Saving…' : 'Save & next →'}</button>
+        <div class="recipe-nav">
+          <button type="button" class="btn" data-action="recipe-move" data-step="-1">← Back</button>
+          <button type="button" class="btn" data-action="recipe-move" data-step="1">Skip →</button>
+        </div>
+      </div>`;
+  }
+
   // ---------- Drawing ----------
 
-  const VIEWS = { kitchen: kitchenView, stock: stockView, billing: billingView, running: runningView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
+  const VIEWS = { kitchen: kitchenView, stock: stockView, recipes: recipesView, billing: billingView, running: runningView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
 
   let drawnView = null;
 
   function render() {
     // A kitchen phone only ever shows its kitchen (or the connect and settings screens).
-    if (kitchenName() && !['connect', 'settings', 'stock'].includes(state.view)) state.view = 'kitchen';
+    if (recipeMode() && !['connect', 'settings'].includes(state.view)) {
+    if (state.view !== 'recipes') loadRecipes();
+    state.view = 'recipes';
+  } else if (kitchenName() && !['connect', 'settings', 'stock'].includes(state.view)) state.view = 'kitchen';
     // Redrawing the same screen (a bill opened, an upload finished) keeps its scroll place.
     const page = viewEl.querySelector('.page');
     const scrollTop = drawnView === state.view && page ? page.scrollTop : 0;
@@ -867,7 +968,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     const redrawn = viewEl.querySelector('.page');
     if (redrawn) redrawn.scrollTop = scrollTop;
     const active = state.view === 'done' ? 'billing' : state.view;
-    navEl.hidden = state.view === 'kitchen' || (state.view === 'stock' && Boolean(kitchenName()));
+    navEl.hidden = state.view === 'kitchen' || state.view === 'recipes' || (state.view === 'stock' && Boolean(kitchenName()));
     navEl.innerHTML = NAV.map(([view, label]) => `
       <button type="button" class="nav-btn${view === active ? ' is-active' : ''}"
         data-action="nav" data-view="${view}">${label}</button>`).join('');
@@ -876,7 +977,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   // Called when something changed in the background (an upload finished, the menu
   // arrived). Never redraws a form the person may be typing in.
   function refresh() {
-    if (state.view === 'stock') return; // someone may be typing a count
+    if (state.view === 'stock' || state.view === 'recipes') return; // someone may be typing
     if (state.view === 'settings') {
       const status = viewEl.querySelector('#status');
       if (status) status.innerHTML = statusHtml();
@@ -1064,6 +1165,75 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       render();
       loadStockItems();
     },
+    'recipe-load'() {
+      recipe.error = null;
+      render();
+      loadRecipes();
+    },
+    'recipe-pick'(el) {
+      const item = el.dataset.item;
+      if (item in recipe.pick) delete recipe.pick[item];
+      else recipe.pick[item] = '';
+      recipe.note = null;
+      render();
+    },
+    'recipe-add'(el) {
+      const box = viewEl.querySelector('#recipe-new-name');
+      const name = box.value.trim().replace(/\s+/g, ' ');
+      const dish = recipe.data.dishes[recipe.index];
+      if (!name) {
+        recipe.note = 'Type the ingredient name first, then tap its unit.';
+        render();
+        return;
+      }
+      const known = recipe.data.stock.find((x) => x.kitchen === dish.kitchen && x.item.toLowerCase() === name.toLowerCase());
+      const item = known ? known.item : name;
+      if (!known) recipe.data.stock.push({ item, kitchen: dish.kitchen, unit: el.dataset.unit, isNew: true });
+      recipe.pick[item] = recipe.pick[item] ?? '';
+      recipe.note = null;
+      render();
+    },
+    'recipe-qty'(el) {
+      recipe.pick[el.dataset.item] = el.dataset.qty;
+      render();
+    },
+    'recipe-move'(el) {
+      const n = recipe.data.dishes.length;
+      openDish((recipe.index + Number(el.dataset.step) + n) % n);
+      recipe.note = null;
+      recipe.error = null;
+      render();
+    },
+    async 'recipe-save'() {
+      const dish = recipe.data.dishes[recipe.index];
+      const lines = [];
+      for (const [ingredient, text] of Object.entries(recipe.pick)) {
+        const qty = parseQty(text);
+        if (!qty) {
+          recipe.note = `Pick an amount for ${ingredient}, or tap it again to remove it.`;
+          render();
+          return;
+        }
+        const added = recipe.data.stock.find((x) => x.isNew && x.item === ingredient && x.kitchen === dish.kitchen);
+        lines.push(added ? { ingredient, qty, unit: added.unit, isNew: true } : { ingredient, qty });
+      }
+      recipe.saving = true;
+      render();
+      try {
+        const reply = await api.send({ action: 'saveRecipe', dish: dish.dish, kitchen: dish.kitchen, lines });
+        if (!reply.ok) throw new Error(reply.error || 'bad_response');
+        dish.lines = lines.map(({ ingredient, qty }) => ({ ingredient, qty }));
+        dish.saved = true;
+        recipe.data.stock.forEach((x) => { if (x.isNew && lines.some((l) => l.ingredient === x.item)) delete x.isNew; });
+        recipe.error = null;
+        recipe.note = `✓ ${dish.dish} saved · ${recipeCovered()}% of sales covered`;
+        openDish(nextOpenDish(recipe.index));
+      } catch (e) {
+        recipe.error = e.message;
+      }
+      recipe.saving = false;
+      if (state.view === 'recipes') render();
+    },
     async 'stock-sold-as'(el) {
       const item = (state.stockItems || []).find((i) => i.item === el.dataset.item);
       if (!item) return;
@@ -1158,6 +1328,11 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   });
 
   root.addEventListener('input', (event) => {
+    const recipeItem = event.target.dataset && event.target.dataset.recipeItem;
+    if (recipeItem) {
+      recipe.pick[recipeItem] = event.target.value;
+      return;
+    }
     const stockItem = event.target.dataset && event.target.dataset.stockItem;
     if (stockItem) {
       stockDraft().values[stockItem] = event.target.value;

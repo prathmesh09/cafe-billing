@@ -856,12 +856,9 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
 
   const RECIPES = 'Recipes';
   const recipeMode = () => store.getSettings().kitchen === RECIPES;
-  const recipe = { data: null, index: 0, pick: {}, error: null, note: null, saving: false };
-  const PRESETS = {
-    nos: [[0.5, '½'], [1, '1'], [2, '2'], [3, '3']],
-    kg: [[0.025, '25 g'], [0.05, '50 g'], [0.1, '100 g'], [0.15, '150 g']],
-    packets: [[0.25, '¼'], [0.5, '½'], [1, '1']],
-  };
+  const recipe = { data: null, index: 0, rows: [], error: null, note: null, saving: false };
+  const RECIPE_UNITS = ['g', 'kg', 'ml', 'litre', 'nos', 'pcs', 'slices', 'packets', 'tbsp', 'tsp', 'scoops'];
+  const emptyRow = () => ({ ingredient: '', qty: '', unit: '' });
 
   const recipeDone = (d) => d.lines.length > 0 || d.saved;
   function recipeCovered() {
@@ -872,8 +869,9 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   function openDish(i) {
     recipe.index = i;
     const dish = recipe.data.dishes[i];
-    recipe.pick = {};
-    dish.lines.forEach((l) => { recipe.pick[l.ingredient] = String(l.qty); });
+    recipe.rows = dish.lines.length
+      ? dish.lines.map((l) => ({ ingredient: l.ingredient, qty: String(l.qty), unit: l.unit || '' }))
+      : [emptyRow(), emptyRow(), emptyRow()];
   }
   function nextOpenDish(from) {
     const list = recipe.data.dishes;
@@ -898,6 +896,8 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     if (state.view === 'recipes') render();
   }
 
+  // One row per ingredient: name, quantity, unit. Name and unit are dropdowns that
+  // also take anything typed, for items not on the list.
   function recipesView() {
     if (!recipe.data) {
       return `<div class="page recipes"><h1>Recipe cards</h1>${recipe.error
@@ -909,33 +909,31 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     const dish = list[recipe.index];
     const doneCount = list.filter(recipeDone).length;
     const covered = recipeCovered();
-    const stock = recipe.data.stock.filter((s) => s.kitchen === dish.kitchen);
-    const chips = stock.map((s) => `
-      <button type="button" class="chip${s.item in recipe.pick ? ' is-active' : ''}" data-action="recipe-pick"
-        data-item="${escapeHtml(s.item)}">${escapeHtml(s.item)}</button>`).join('');
-    const amounts = stock.filter((s) => s.item in recipe.pick).map((s) => {
-      const presets = (PRESETS[s.unit] || [[1, '1'], [2, '2']]).map(([v, label]) => `
-        <button type="button" class="chip${Number(recipe.pick[s.item]) === v ? ' is-active' : ''}" data-action="recipe-qty"
-          data-item="${escapeHtml(s.item)}" data-qty="${v}">${label}</button>`).join('');
-      return `<div class="recipe-amount"><b>${escapeHtml(s.item)}</b>
-        <div class="recipe-presets">${presets}
-          <input type="text" inputmode="decimal" data-recipe-item="${escapeHtml(s.item)}" value="${escapeHtml(recipe.pick[s.item])}"
-            placeholder="other"> <span class="stock-unit">${escapeHtml(s.unit)}</span></div></div>`;
-    }).join('');
+    const own = recipe.data.stock.filter((x) => x.kitchen === dish.kitchen).map((x) => x.item);
+    const others = recipe.data.stock.filter((x) => x.kitchen !== dish.kitchen).map((x) => x.item);
+    const names = [...new Set([...own, ...others])];
+    const rows = recipe.rows.map((r, i) => `
+      <div class="recipe-row">
+        <input type="text" list="recipe-items" autocomplete="off" placeholder="Ingredient" data-recipe-row="${i}" data-field="ingredient"
+          value="${escapeHtml(r.ingredient)}">
+        <input type="text" inputmode="decimal" autocomplete="off" placeholder="Qty" data-recipe-row="${i}" data-field="qty"
+          value="${escapeHtml(r.qty)}">
+        <input type="text" list="recipe-units" autocomplete="off" placeholder="Unit" data-recipe-row="${i}" data-field="unit"
+          value="${escapeHtml(r.unit)}">
+        <button type="button" class="recipe-remove" data-action="recipe-remove" data-row="${i}" aria-label="Remove">✕</button>
+      </div>`).join('');
     return `
       <div class="page recipes">
         <div class="recipe-progress"><span style="width:${covered}%"></span></div>
         <p class="hint">${doneCount} of ${list.length} dishes · ${covered}% of sales covered</p>
         <h1>${escapeHtml(dish.dish)}</h1>
         <p class="hint">${escapeHtml(dish.kitchen)} · sold ${dish.sold} in 30 days${recipeDone(dish) ? ' · ✓ saved' : ''}</p>
-        <p><b>1. Tap what goes into one plate</b></p>
-        <div class="recipe-chips">${chips}</div>
-        <div class="recipe-new">
-          <input type="text" id="recipe-new-name" placeholder="Not listed? e.g. Lettuce" autocomplete="off">
-          ${['nos', 'kg', 'packets', 'litre'].map((u) => `
-            <button type="button" class="chip" data-action="recipe-add" data-unit="${u}">+ ${u}</button>`).join('')}
-        </div>
-        ${amounts ? `<p><b>2. How much per plate?</b></p>${amounts}` : ''}
+        <p><b>What goes into one plate?</b></p>
+        <div class="recipe-head"><span>Ingredient</span><span>Qty</span><span>Unit</span><span></span></div>
+        ${rows}
+        <datalist id="recipe-items">${names.map((n) => `<option value="${escapeHtml(n)}">`).join('')}</datalist>
+        <datalist id="recipe-units">${RECIPE_UNITS.map((u) => `<option value="${u}">`).join('')}</datalist>
+        <button type="button" class="btn wide" data-action="recipe-add-row">+ Add ingredient</button>
         ${recipe.error ? `<p class="waiting">Not saved: ${escapeHtml(errorText(recipe.error))}</p>` : ''}
         ${recipe.note ? `<p class="hint">${escapeHtml(recipe.note)}</p>` : ''}
         <button type="button" class="btn btn-primary wide" data-action="recipe-save" ${recipe.saving ? 'disabled' : ''}>
@@ -1170,31 +1168,13 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       render();
       loadRecipes();
     },
-    'recipe-pick'(el) {
-      const item = el.dataset.item;
-      if (item in recipe.pick) delete recipe.pick[item];
-      else recipe.pick[item] = '';
-      recipe.note = null;
+    'recipe-add-row'() {
+      recipe.rows.push(emptyRow());
       render();
     },
-    'recipe-add'(el) {
-      const box = viewEl.querySelector('#recipe-new-name');
-      const name = box.value.trim().replace(/\s+/g, ' ');
-      const dish = recipe.data.dishes[recipe.index];
-      if (!name) {
-        recipe.note = 'Type the ingredient name first, then tap its unit.';
-        render();
-        return;
-      }
-      const known = recipe.data.stock.find((x) => x.kitchen === dish.kitchen && x.item.toLowerCase() === name.toLowerCase());
-      const item = known ? known.item : name;
-      if (!known) recipe.data.stock.push({ item, kitchen: dish.kitchen, unit: el.dataset.unit, isNew: true });
-      recipe.pick[item] = recipe.pick[item] ?? '';
-      recipe.note = null;
-      render();
-    },
-    'recipe-qty'(el) {
-      recipe.pick[el.dataset.item] = el.dataset.qty;
+    'recipe-remove'(el) {
+      recipe.rows.splice(Number(el.dataset.row), 1);
+      if (recipe.rows.length === 0) recipe.rows.push(emptyRow());
       render();
     },
     'recipe-move'(el) {
@@ -1206,25 +1186,30 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     },
     async 'recipe-save'() {
       const dish = recipe.data.dishes[recipe.index];
+      const kitchenStock = recipe.data.stock.filter((x) => x.kitchen === dish.kitchen);
       const lines = [];
-      for (const [ingredient, text] of Object.entries(recipe.pick)) {
-        const qty = parseQty(text);
-        if (!qty) {
-          recipe.note = `Pick an amount for ${ingredient}, or tap it again to remove it.`;
+      for (const r of recipe.rows) {
+        const name = r.ingredient.trim().replace(/\s+/g, ' ');
+        const unit = r.unit.trim();
+        if (!name && !r.qty.trim() && !unit) continue; // an empty row
+        const qty = parseQty(r.qty);
+        if (!name || !qty || !unit) {
+          recipe.note = `Fill all three boxes for ${name || 'each ingredient'} (ingredient, quantity, unit), or remove the row.`;
           render();
           return;
         }
-        const added = recipe.data.stock.find((x) => x.isNew && x.item === ingredient && x.kitchen === dish.kitchen);
-        lines.push(added ? { ingredient, qty, unit: added.unit, isNew: true } : { ingredient, qty });
+        // A name typed in a different case still matches the stock list.
+        const known = kitchenStock.find((x) => x.item.toLowerCase() === name.toLowerCase());
+        lines.push(known ? { ingredient: known.item, qty, unit } : { ingredient: name, qty, unit, isNew: true });
       }
       recipe.saving = true;
       render();
       try {
         const reply = await api.send({ action: 'saveRecipe', dish: dish.dish, kitchen: dish.kitchen, lines });
         if (!reply.ok) throw new Error(reply.error || 'bad_response');
-        dish.lines = lines.map(({ ingredient, qty }) => ({ ingredient, qty }));
+        dish.lines = lines.map(({ ingredient, qty, unit }) => ({ ingredient, qty, unit }));
         dish.saved = true;
-        recipe.data.stock.forEach((x) => { if (x.isNew && lines.some((l) => l.ingredient === x.item)) delete x.isNew; });
+        lines.filter((l) => l.isNew).forEach((l) => recipe.data.stock.push({ item: l.ingredient, kitchen: dish.kitchen, unit: l.unit }));
         recipe.error = null;
         recipe.note = `✓ ${dish.dish} saved · ${recipeCovered()}% of sales covered`;
         openDish(nextOpenDish(recipe.index));
@@ -1328,9 +1313,10 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   });
 
   root.addEventListener('input', (event) => {
-    const recipeItem = event.target.dataset && event.target.dataset.recipeItem;
-    if (recipeItem) {
-      recipe.pick[recipeItem] = event.target.value;
+    const recipeRow = event.target.dataset && event.target.dataset.recipeRow;
+    if (recipeRow !== undefined) {
+      const row = recipe.rows[Number(recipeRow)];
+      if (row) row[event.target.dataset.field] = event.target.value;
       return;
     }
     const stockItem = event.target.dataset && event.target.dataset.stockItem;

@@ -456,10 +456,10 @@ h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: 
 /* Recipe cards */
 .recipe-progress { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
 .recipe-progress span { display: block; height: 100%; background: var(--accent); }
-.recipe-chips, .recipe-presets { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.recipe-amount { margin: 10px 0; }
-.recipe-presets input { width: 72px; height: 36px; font-size: 16px; text-align: right; padding: 0 6px; border: 1px solid var(--line); border-radius: 8px; }
+.recipe-head, .recipe-row { display: grid; grid-template-columns: 1fr 64px 80px 32px; gap: 6px; align-items: center; }
+.recipe-head { color: var(--muted); font-size: 13px; }
+.recipe-row { margin-top: 6px; }
+.recipe-row input { width: 100%; min-width: 0; height: 42px; font-size: 16px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; }
+.recipe-remove { height: 42px; border: 0; background: none; color: var(--muted); font-size: 18px; }
 .recipe-nav { display: flex; gap: 8px; }
 .recipe-nav .btn { flex: 1; margin-top: 8px; }
-.recipe-new { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
-.recipe-new input { flex: 1 1 100%; height: 40px; font-size: 16px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; }

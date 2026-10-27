@@ -441,3 +441,12 @@ h2 { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; color: 
 .run-lines small.late { color: var(--danger); }
 .run-total { display: flex; justify-content: space-between; margin: 8px 0 10px; font-size: 18px; }
 .table:disabled { opacity: 0.45; }
+
+/* Stock count on a kitchen phone: one row per item, a number box, the unit. */
+.stock .stock-kinds { padding: 0; margin: 8px 0; }
+.stock-list { background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin-top: 8px; }
+.stock-row { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-top: 1px solid var(--line); min-height: var(--tap); }
+.stock-row:first-child { border-top: 0; }
+.stock-name { flex: 1; font-weight: 600; }
+.stock-row input { width: 84px; height: 40px; font-size: 18px; text-align: right; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; }
+.stock-unit { width: 56px; color: var(--muted); font-size: 14px; }

@@ -6,6 +6,7 @@ import { emptyDraft, lineKey, addItem, changeQty, draftTotal, localDate, randomS
 import { kitchens, groupByCategory, searchItems } from './menu.js';
 import { pushAvailable, alertsOn, startPush, askForAlerts, onAlert } from './push.js';
 import { ringTones, ringVibration } from './ring.js';
+import { stockEntry, loadStockDraft, saveStockDraft } from './stock.js';
 
 const ERROR_TEXT = {
   bad_passcode: 'Passcode not accepted',
@@ -61,6 +62,10 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     todayNotice: null,  // red line at the top of Today
     settingsNote: null, // a short line under the Settings buttons, e.g. "Saved"
     menuError: null,    // error code from the last menu refresh, if it failed
+    stockItems: null,   // stock screen: this kitchen's list from the sheet, once loaded
+    stockError: null,   // why the list could not be read or the count not saved
+    stockNote: null,    // "Saved" line on the stock screen
+    stockSaving: false,
   };
 
   root.innerHTML = '<main id="view" class="view"></main><nav class="nav"></nav>';
@@ -678,7 +683,8 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     state.kitchenError = null;
     if (fresh && state.ticketsLoaded) ring();
     state.ticketsLoaded = true;
-    if (state.view === 'kitchen') render();
+    // On the stock screen a new order shows a banner too: the ring alone is easy to miss.
+    if (state.view === 'kitchen' || (state.view === 'stock' && fresh)) render();
   }
 
   let unsubscribeTickets = null;
@@ -738,20 +744,105 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       <div class="page kitchen">
         <h1>${name} kitchen <small>${state.tickets.length} waiting</small></h1>
         ${alerts}
+        <button type="button" class="btn btn-dark wide" data-action="open-stock">📦 Stock count / delivery</button>
         ${state.kitchenError ? `<p class="waiting">Cannot reach the sheet right now. Trying again…</p>` : ''}
         ${cards || '<p class="empty">No orders right now.</p>'}
       </div>`;
   }
 
+  // ---------- Stock (kitchen phones) ----------
+  //
+  // Count: what is on the shelf now. Delivery: what just came in. Only items with a
+  // number are sent, so a partial count is fine. The typed numbers stay on the phone
+  // until the sheet has them; the entry id stays the same, so a retry is never doubled.
+
+  const phoneStorage = () => window.localStorage;
+  const newStockDraft = () => ({ id: `STK-${Date.now()}-${randomSuffix()}`, values: {} });
+  // One draft per kind, so tapping the other tab never wipes a half-typed count.
+  const stock = (() => {
+    try {
+      return loadStockDraft(phoneStorage()) || { kind: 'Count', drafts: {} };
+    } catch {
+      return { kind: 'Count', drafts: {} };
+    }
+  })();
+  const stockDraft = () => {
+    if (!stock.drafts[stock.kind]) stock.drafts[stock.kind] = newStockDraft();
+    return stock.drafts[stock.kind];
+  };
+  const keepStockDraft = () => {
+    try {
+      saveStockDraft(phoneStorage(), stock);
+    } catch {
+      // the numbers are still on screen
+    }
+  };
+
+  async function loadStockItems() {
+    try {
+      const reply = await api.send({ action: 'getStockItems', kitchen: kitchenName() });
+      if (!reply.ok || !Array.isArray(reply.items)) throw new Error(reply.error || 'bad_response');
+      state.stockItems = reply.items;
+      state.stockError = null;
+    } catch (e) {
+      state.stockError = e.message;
+    }
+    if (state.view === 'stock') render();
+  }
+
+  function stockView() {
+    const counting = stock.kind === 'Count';
+    const values = stockDraft().values;
+    const kindButton = (kind, label) => `
+      <button type="button" class="tab${stock.kind === kind ? ' is-active' : ''}"
+        data-action="stock-kind" data-kind="${kind}">${label}</button>`;
+    let body;
+    if (!state.stockItems) {
+      body = state.stockError
+        ? `<p class="waiting">${escapeHtml(errorText(state.stockError))}</p>
+           <button type="button" class="btn btn-dark wide" data-action="open-stock">Try again</button>`
+        : '<p class="empty">Loading the stock list…</p>';
+    } else if (state.stockItems.length === 0) {
+      body = '<p class="empty">No stock items for this kitchen yet. The owner adds them on the "Stock items" tab.</p>';
+    } else {
+      body = `
+        <div class="stock-list">
+          ${state.stockItems.map((i) => `
+            <label class="stock-row">
+              <span class="stock-name">${escapeHtml(i.item)}</span>
+              <input type="text" inputmode="decimal" autocomplete="off" data-stock-item="${escapeHtml(i.item)}"
+                value="${escapeHtml(values[i.item] ?? '')}" placeholder="–">
+              <span class="stock-unit">${escapeHtml(i.unit || '')}</span>
+            </label>`).join('')}
+        </div>
+        ${state.stockError ? `<p class="waiting">Not saved: ${escapeHtml(errorText(state.stockError))} The numbers are kept; press Save again.</p>` : ''}
+        ${state.stockNote ? `<p class="hint">${escapeHtml(state.stockNote)}</p>` : ''}
+        <button type="button" class="btn btn-primary wide" data-action="stock-save" ${state.stockSaving ? 'disabled' : ''}>
+          ${state.stockSaving ? 'Saving…' : counting ? 'Save count' : 'Save delivery'}</button>`;
+    }
+    return `
+      <div class="page stock">
+        <h1>${escapeHtml(kitchenName())} stock</h1>
+        ${state.tickets.length ? `<button type="button" class="btn btn-primary wide stock-orders" data-action="stock-back">
+          🔔 ${state.tickets.length} order${state.tickets.length === 1 ? '' : 's'} waiting: back to orders</button>` : ''}
+        <div class="tabs stock-kinds">${kindButton('Count', 'Count what is left')}${kindButton('Received', 'Delivery came in')}</div>
+        <p class="hint">${counting
+    ? 'Type what is on the shelf now. Leave an item blank if you did not count it.'
+    : 'Type only what just arrived.'}</p>
+        ${body}
+        <button type="button" class="btn wide" data-action="stock-back">Back to orders</button>
+      </div>`;
+  }
+
   // ---------- Drawing ----------
 
-  const VIEWS = { kitchen: kitchenView, billing: billingView, running: runningView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
+  const VIEWS = { kitchen: kitchenView, stock: stockView, billing: billingView, running: runningView, done: doneView, today: todayView, settings: settingsView, connect: connectView };
 
   let drawnView = null;
 
   function render() {
     // A kitchen phone only ever shows its kitchen (or the connect and settings screens).
-    if (kitchenName() && !['connect', 'settings'].includes(state.view)) state.view = 'kitchen';
+    if (kitchenName() && !['connect', 'settings', 'stock'].includes(state.view)) state.view = 'kitchen';
     // Redrawing the same screen (a bill opened, an upload finished) keeps its scroll place.
     const page = viewEl.querySelector('.page');
     const scrollTop = drawnView === state.view && page ? page.scrollTop : 0;
@@ -761,7 +852,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     const redrawn = viewEl.querySelector('.page');
     if (redrawn) redrawn.scrollTop = scrollTop;
     const active = state.view === 'done' ? 'billing' : state.view;
-    navEl.hidden = state.view === 'kitchen';
+    navEl.hidden = state.view === 'kitchen' || state.view === 'stock';
     navEl.innerHTML = NAV.map(([view, label]) => `
       <button type="button" class="nav-btn${view === active ? ' is-active' : ''}"
         data-action="nav" data-view="${view}">${label}</button>`).join('');
@@ -770,6 +861,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   // Called when something changed in the background (an upload finished, the menu
   // arrived). Never redraws a form the person may be typing in.
   function refresh() {
+    if (state.view === 'stock') return; // someone may be typing a count
     if (state.view === 'settings') {
       const status = viewEl.querySelector('#status');
       if (status) status.innerHTML = statusHtml();
@@ -945,6 +1037,52 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     alerts() {
       startPush(kitchenName()).then((ready) => (ready ? askForAlerts() : false)).then(render);
     },
+    'open-stock'() {
+      state.view = 'stock';
+      state.stockError = null;
+      state.stockNote = null;
+      render();
+      loadStockItems();
+    },
+    'stock-back'() {
+      state.view = 'kitchen';
+      render();
+    },
+    'stock-kind'(el) {
+      if (stock.kind === el.dataset.kind) return;
+      stock.kind = el.dataset.kind;
+      keepStockDraft();
+      state.stockNote = null;
+      state.stockError = null;
+      render();
+    },
+    async 'stock-save'() {
+      const draft = stockDraft();
+      const kind = stock.kind;
+      const entry = stockEntry({ id: draft.id, kitchen: kitchenName(), kind,
+        items: state.stockItems || [], values: draft.values, now: new Date() });
+      if (!entry) {
+        state.stockError = null;
+        state.stockNote = 'Type a number for at least one item first.';
+        render();
+        return;
+      }
+      state.stockSaving = true;
+      state.stockNote = null;
+      render();
+      try {
+        const reply = await api.send({ action: 'addStock', entry });
+        if (!reply.ok) throw new Error(reply.error || 'bad_response');
+        if (stock.drafts[kind] === draft) delete stock.drafts[kind];
+        keepStockDraft();
+        state.stockError = null;
+        state.stockNote = `Saved ✓ ${entry.lines.length} item${entry.lines.length === 1 ? '' : 's'} at ${entry.time}`;
+      } catch (e) {
+        state.stockError = e.message;
+      }
+      state.stockSaving = false;
+      if (state.view === 'stock') render();
+    },
     'ticket-ready'(el) {
       doneTickets.add(el.dataset.id);
       state.tickets = state.tickets.filter((t) => t.id !== el.dataset.id);
@@ -986,6 +1124,12 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   });
 
   root.addEventListener('input', (event) => {
+    const stockItem = event.target.dataset && event.target.dataset.stockItem;
+    if (stockItem) {
+      stockDraft().values[stockItem] = event.target.value;
+      keepStockDraft();
+      return;
+    }
     if (event.target.id !== 'search') return;
     state.query = event.target.value;
     renderBilling();

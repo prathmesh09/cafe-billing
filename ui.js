@@ -23,7 +23,7 @@ const BILL_NOT_SAVED = 'Bill NOT saved. Phone storage is full or blocked.';
 const NO_MENU = 'No menu yet. Connect to the internet, open Settings and press Refresh menu.';
 
 // Settings is not in the bar: staff rarely need it. It sits behind the gear on the Running and Today screens.
-const NAV = [['billing', 'Billing'], ['running', 'Running'], ['today', 'Today']];
+const NAV = [['billing', 'Billing'], ['running', 'Running'], ['today', 'Today'], ['stock', 'Stock']];
 
 const GEAR = '<button type="button" class="gear" data-action="nav" data-view="settings" aria-label="Settings">⚙</button>';
 
@@ -778,9 +778,13 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     }
   };
 
+  // A kitchen phone counts its kitchen's stock; the counter phone counts the counter's
+  // (cigarettes in sticks, cold drinks, water).
+  const stockPlace = () => kitchenName() || 'Counter';
+
   async function loadStockItems() {
     try {
-      const reply = await api.send({ action: 'getStockItems', kitchen: kitchenName() });
+      const reply = await api.send({ action: 'getStockItems', kitchen: stockPlace() });
       if (!reply.ok || !Array.isArray(reply.items)) throw new Error(reply.error || 'bad_response');
       state.stockItems = reply.items;
       state.stockError = null;
@@ -788,6 +792,17 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       state.stockError = e.message;
     }
     if (state.view === 'stock') render();
+  }
+
+  // Cigarettes are counted by brand but billed by price. Until a brand's price is set,
+  // its row shows one button per cigarette price on the menu; the manager taps once.
+  function soldAsPicker(i) {
+    if (i.unit !== 'sticks' || i.soldAs) return '';
+    const prices = store.getMenu().items.filter((m) => m.category === 'Cigarettes');
+    if (prices.length === 0) return '';
+    return `<span class="sold-as">Sold at: ${prices.map((m) => `
+      <button type="button" class="chip" data-action="stock-sold-as" data-item="${escapeHtml(i.item)}"
+        data-sold-as="${escapeHtml(m.item)}">${rupees(m.price)}</button>`).join('')}</span>`;
   }
 
   function stockView() {
@@ -809,7 +824,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
         <div class="stock-list">
           ${state.stockItems.map((i) => `
             <label class="stock-row">
-              <span class="stock-name">${escapeHtml(i.item)}</span>
+              <span class="stock-name">${escapeHtml(i.item)}${soldAsPicker(i)}</span>
               <input type="text" inputmode="decimal" autocomplete="off" data-stock-item="${escapeHtml(i.item)}"
                 value="${escapeHtml(values[i.item] ?? '')}" placeholder="–">
               <span class="stock-unit">${escapeHtml(i.unit || '')}</span>
@@ -822,15 +837,15 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     }
     return `
       <div class="page stock">
-        <h1>${escapeHtml(kitchenName())} stock</h1>
-        ${state.tickets.length ? `<button type="button" class="btn btn-primary wide stock-orders" data-action="stock-back">
+        <h1>${escapeHtml(stockPlace())} stock</h1>
+        ${kitchenName() && state.tickets.length ? `<button type="button" class="btn btn-primary wide stock-orders" data-action="stock-back">
           🔔 ${state.tickets.length} order${state.tickets.length === 1 ? '' : 's'} waiting: back to orders</button>` : ''}
         <div class="tabs stock-kinds">${kindButton('Count', 'Count what is left')}${kindButton('Received', 'Delivery came in')}</div>
         <p class="hint">${counting
     ? 'Type what is on the shelf now. Leave an item blank if you did not count it.'
     : 'Type only what just arrived.'}</p>
         ${body}
-        <button type="button" class="btn wide" data-action="stock-back">Back to orders</button>
+        ${kitchenName() ? '<button type="button" class="btn wide" data-action="stock-back">Back to orders</button>' : ''}
       </div>`;
   }
 
@@ -852,7 +867,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     const redrawn = viewEl.querySelector('.page');
     if (redrawn) redrawn.scrollTop = scrollTop;
     const active = state.view === 'done' ? 'billing' : state.view;
-    navEl.hidden = state.view === 'kitchen' || state.view === 'stock';
+    navEl.hidden = state.view === 'kitchen' || (state.view === 'stock' && Boolean(kitchenName()));
     navEl.innerHTML = NAV.map(([view, label]) => `
       <button type="button" class="nav-btn${view === active ? ' is-active' : ''}"
         data-action="nav" data-view="${view}">${label}</button>`).join('');
@@ -883,6 +898,11 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       state.picking = false;
       state.moving = null;
       if (state.view === 'today') refreshToday();
+      if (state.view === 'stock') {
+        state.stockError = null;
+        state.stockNote = null;
+        loadStockItems();
+      }
       state.settingsNote = null;
       state.todayNotice = null;
       render();
@@ -1044,6 +1064,20 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       render();
       loadStockItems();
     },
+    async 'stock-sold-as'(el) {
+      const item = (state.stockItems || []).find((i) => i.item === el.dataset.item);
+      if (!item) return;
+      try {
+        const reply = await api.send({ action: 'setSoldAs', kitchen: stockPlace(), item: item.item, soldAs: el.dataset.soldAs });
+        if (!reply.ok || !reply.found) throw new Error(reply.error || 'bad_response');
+        item.soldAs = el.dataset.soldAs;
+        state.stockError = null;
+        state.stockNote = `${item.item}: sold as ${item.soldAs}`;
+      } catch (e) {
+        state.stockError = e.message;
+      }
+      if (state.view === 'stock') render();
+    },
     'stock-back'() {
       state.view = 'kitchen';
       render();
@@ -1059,7 +1093,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     async 'stock-save'() {
       const draft = stockDraft();
       const kind = stock.kind;
-      const entry = stockEntry({ id: draft.id, kitchen: kitchenName(), kind,
+      const entry = stockEntry({ id: draft.id, kitchen: stockPlace(), kind,
         items: state.stockItems || [], values: draft.values, now: new Date() });
       if (!entry) {
         state.stockError = null;

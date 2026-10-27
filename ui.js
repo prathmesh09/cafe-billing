@@ -6,7 +6,7 @@ import { emptyDraft, lineKey, addItem, changeQty, draftTotal, localDate, randomS
 import { kitchens, groupByCategory, searchItems } from './menu.js';
 import { pushAvailable, alertsOn, startPush, askForAlerts, onAlert } from './push.js';
 import { ringTones, ringVibration } from './ring.js';
-import { stockEntry, loadStockDraft, saveStockDraft, parseQty } from './stock.js';
+import { stockEntry, loadStockDraft, saveStockDraft, parseQty, closeMatch } from './stock.js';
 
 const ERROR_TEXT = {
   bad_passcode: 'Passcode not accepted',
@@ -856,7 +856,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
 
   const RECIPES = 'Recipes';
   const recipeMode = () => store.getSettings().kitchen === RECIPES;
-  const recipe = { data: null, index: 0, rows: [], error: null, note: null, saving: false };
+  const recipe = { data: null, index: 0, rows: [], error: null, note: null, saving: false, kept: new Set() };
   const RECIPE_UNITS = ['g', 'kg', 'ml', 'litre', 'nos', 'pcs', 'slices', 'packets', 'tbsp', 'tsp', 'scoops'];
   const emptyRow = () => ({ ingredient: '', qty: '', unit: '' });
 
@@ -1200,6 +1200,14 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
         }
         // A name typed in a different case still matches the stock list.
         const known = kitchenStock.find((x) => x.item.toLowerCase() === name.toLowerCase());
+        // A typo of a listed item is asked about once; Save again keeps the typed name.
+        const near = known ? null : closeMatch(name, recipe.data.stock.map((x) => x.item));
+        if (near && !recipe.kept.has(name)) {
+          recipe.kept.add(name);
+          recipe.note = `"${name}" looks like "${near}", which is already on the list. Change it to ${near}, or tap Save again to keep "${name}".`;
+          render();
+          return;
+        }
         lines.push(known ? { ingredient: known.item, qty, unit } : { ingredient: name, qty, unit, isNew: true });
       }
       recipe.saving = true;

@@ -42,3 +42,36 @@ export function saveStockDraft(storage, saved) {
     // nothing more can be done
   }
 }
+
+// An existing name that a newly typed one is probably meant to be ("Oinon" → "Onion",
+// "Egg" → "Eggs"), or null. Case, spaces and up to two letters' difference are ignored.
+export function closeMatch(name, names) {
+  const flat = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const a = flat(name);
+  if (a.length < 3) return null;
+  let best = null;
+  let bestDistance = 3;
+  for (const other of names) {
+    const b = flat(other);
+    if (!b || b === a) continue;
+    const d = b.startsWith(a) || a.startsWith(b) ? Math.min(Math.abs(a.length - b.length), 2) : distance(a, b);
+    if (d < bestDistance) {
+      best = other;
+      bestDistance = d;
+    }
+  }
+  return best;
+}
+
+function distance(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return 3;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = row;
+  }
+  return prev[b.length];
+}

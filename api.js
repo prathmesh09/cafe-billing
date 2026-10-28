@@ -118,5 +118,13 @@ export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = ()
     return reply.token;
   }
 
-  return { send, getMenu, getToday, getOpen, getTickets, getFirebasePass };
+  // The owner's dashboard for one day (owner passcode only).
+  async function getDashboard(date) {
+    const reply = await send({ action: 'getDashboard', date });
+    if (!reply.ok) throw new Error(reply.error || 'bad_response');
+    if (!reply.dashboard || typeof reply.dashboard !== 'object' || reply.dashboard.date !== date) throw new Error('bad_response');
+    return reply.dashboard;
+  }
+
+  return { send, getMenu, getToday, getOpen, getTickets, getFirebasePass, getDashboard };
 }

@@ -6,7 +6,8 @@
 
 import { newTickets } from './tickets.js';
 
-const KEYS = { settings: 'cb.settings', menu: 'cb.menu', sync: 'cb.sync', data: 'cb.data', sheetToday: 'cb.sheetToday' };
+const KEYS = { settings: 'cb.settings', menu: 'cb.menu', sync: 'cb.sync', data: 'cb.data', sheetToday: 'cb.sheetToday', dashboard: 'cb.dashboard' };
+const KEEP_DASHBOARD_DAYS = 14;
 const DEFAULT_SETTINGS = { outlet: 'Bhukum', scriptUrl: '', passcode: '' };
 const DEFAULT_SYNC = { lastError: null, lastSuccessAt: null };
 const KEEP_DAYS = 7;
@@ -68,6 +69,14 @@ export function createStore(storage) {
       return menu && Array.isArray(menu.items) ? menu : { items: [], fetchedAt: null };
     },
     saveMenu: (items, fetchedAt) => write(KEYS.menu, { items, fetchedAt }),
+
+    // The owner's dashboard, last loaded copy per day, so it opens without signal.
+    getDashboardCache: (date) => read(KEYS.dashboard, {})[date] ?? null,
+    setDashboardCache(date, bundle) {
+      const all = { ...read(KEYS.dashboard, {}), [date]: bundle };
+      const keep = Object.keys(all).sort().slice(-KEEP_DASHBOARD_DAYS);
+      write(KEYS.dashboard, Object.fromEntries(keep.map((d) => [d, all[d]])));
+    },
 
     // Counts on from the highest number seen today, on this phone or in the sheet, so a
     // phone that was wiped or rescanned does not start again at 1.

@@ -7,7 +7,7 @@
 // another address and are not GETs.
 
 // Set by `npm run stamp`. Do not edit by hand; tests/sw.test.js checks it.
-const VERSION = '8edc24703ad0';
+const VERSION = 'bd31ef9692c4';
 const PREFIX = 'cafe-billing-';
 const CACHE = PREFIX + VERSION;
 
@@ -16,6 +16,7 @@ const SHELL = [
   './',
   'api.js',
   'bill.js',
+  'dashboard.js',
   'firebase-config.js',
   'firebase.js',
   'icon-192.png',
@@ -24,6 +25,7 @@ const SHELL = [
   'main.js',
   'manifest.webmanifest',
   'menu.js',
+  'owner.js',
   'push-config.js',
   'push.js',
   'ring.js',

@@ -7,6 +7,7 @@ import { createSync } from './sync.js';
 import { startUi } from './ui.js';
 import { parseSetupHash } from './setup-link.js';
 import { firebaseAvailable, getFirebaseClient } from './firebase.js';
+import { startOwner, OWNER, unsentCount } from './owner.js';
 
 const RETRY_MS = 60 * 1000;
 
@@ -77,7 +78,12 @@ let arrival = 'none'; // 'none' | 'connected' | 'bad-code'
 if (window.location.hash.startsWith('#c=')) {
   const fromCode = parseSetupHash(window.location.hash);
   arrival = 'bad-code';
-  if (fromCode) {
+  if (fromCode && fromCode.kitchen === OWNER && unsentCount(store) > 0) {
+    // The owner's code scanned on a counter phone that still has bills to send: switching
+    // would strand them (an owner phone never uploads). Keep it a counter phone.
+    window.alert(`This phone still has ${unsentCount(store)} bills or orders to upload. Scan the owner code on your own phone, not this one.`);
+    arrival = 'none';
+  } else if (fromCode) {
     try {
       store.saveSettings(fromCode);
       arrival = 'connected';
@@ -88,47 +94,60 @@ if (window.location.hash.startsWith('#c=')) {
   window.history.replaceState(null, '', window.location.pathname + window.location.search);
 }
 
-const ui = startUi({ store, api, sync, root: document.getElementById('app'), arrival, fb });
-
-// If the app is already open in this tab when a setup code is scanned, the browser only
-// changes the part after the #. Reload so the code is read like a fresh visit.
-window.addEventListener('hashchange', () => {
-  if (window.location.hash.startsWith('#c=')) window.location.reload();
-});
-
-// Chrome on Android offers a one-tap install; keep the offer so the app can show a button.
-window.addEventListener('beforeinstallprompt', (event) => {
-  event.preventDefault();
-  ui.offerInstall(event);
-});
-
-function upload() {
-  sync.flush().catch(() => {}).then(() => ui.refresh()).then(() => ui.refreshOpen());
+// An owner phone (set up from showOwnerSetup) only ever shows the sales dashboard: it
+// never bills, uploads or listens for kitchen tickets.
+if (store.getSettings().kitchen === OWNER) {
+  startOwner({ store, api, root: document.getElementById('app') });
+  window.addEventListener('hashchange', () => {
+    if (window.location.hash.startsWith('#c=')) window.location.reload();
+  });
+} else {
+  startStaffApp();
 }
 
-if (store.getSettings().scriptUrl && arrival !== 'connected') ui.refreshMenu();
-ui.refreshToday();
-upload();
-window.addEventListener('online', upload);
-setInterval(() => {
-  if (store.queueLength() > 0 || store.kitchenLength() > 0) upload();
-}, RETRY_MS);
+function startStaffApp() {
+  const ui = startUi({ store, api, sync, root: document.getElementById('app'), arrival, fb });
 
-// Other phones may open or pay tables; look every 30 seconds while the app is on screen.
-setInterval(() => {
-  if (!ui.isKitchen() && document.visibilityState === 'visible' && store.queueLength() === 0) ui.refreshOpen();
-}, 30 * 1000);
+  // If the app is already open in this tab when a setup code is scanned, the browser only
+  // changes the part after the #. Reload so the code is read like a fresh visit.
+  window.addEventListener('hashchange', () => {
+    if (window.location.hash.startsWith('#c=')) window.location.reload();
+  });
 
-// A kitchen screen looks for new tickets every 8 seconds.
-setInterval(() => {
-  if (ui.isKitchen() && document.visibilityState === 'visible') ui.refreshTickets();
-}, 8 * 1000);
+  // Chrome on Android offers a one-tap install; keep the offer so the app can show a button.
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    ui.offerInstall(event);
+  });
 
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
-  upload();
-  if (ui.isKitchen()) {
-    ui.keepScreenOn();
-    ui.refreshTickets();
+  function upload() {
+    sync.flush().catch(() => {}).then(() => ui.refresh()).then(() => ui.refreshOpen());
   }
-});
+
+  if (store.getSettings().scriptUrl && arrival !== 'connected') ui.refreshMenu();
+  ui.refreshToday();
+  upload();
+  window.addEventListener('online', upload);
+  setInterval(() => {
+    if (store.queueLength() > 0 || store.kitchenLength() > 0) upload();
+  }, RETRY_MS);
+
+  // Other phones may open or pay tables; look every 30 seconds while the app is on screen.
+  setInterval(() => {
+    if (!ui.isKitchen() && document.visibilityState === 'visible' && store.queueLength() === 0) ui.refreshOpen();
+  }, 30 * 1000);
+
+  // A kitchen screen looks for new tickets every 8 seconds.
+  setInterval(() => {
+    if (ui.isKitchen() && document.visibilityState === 'visible') ui.refreshTickets();
+  }, 8 * 1000);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    upload();
+    if (ui.isKitchen()) {
+      ui.keepScreenOn();
+      ui.refreshTickets();
+    }
+  });
+}

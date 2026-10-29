@@ -934,27 +934,37 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
 
   // ---------- Recipe cards (a phone set up with the "Recipes" link) ----------
   //
-  // One dish per card, best sellers first: tap the stock items one plate uses, tap an
-  // amount, Save & next. Each dish is saved to the sheet the moment it is saved here.
+  // One dish per card, shared bases first, then best sellers: weigh what one plate uses,
+  // Save & next. Round 2 (weighed) goes to its own tab; the old guess shows faintly.
 
   const RECIPES = 'Recipes';
   const recipeMode = () => store.getSettings().kitchen === RECIPES;
-  const recipe = { data: null, index: 0, rows: [], error: null, note: null, saving: false, kept: new Set() };
-  const RECIPE_UNITS = ['g', 'kg', 'ml', 'litre', 'nos', 'pcs', 'slices', 'packets', 'tbsp', 'tsp', 'scoops'];
-  const emptyRow = () => ({ ingredient: '', qty: '', unit: '' });
+  const recipe = { data: null, index: 0, rows: [], makes: '1', error: null, note: null, saving: false, kept: new Set() };
+  const RECIPE_UNITS = ['g', 'ml', 'nos', 'kg', 'litre', 'pcs', 'slices', 'packets', 'base'];
+  const BASE_PREFIX = 'Base: ';
+  const emptyRow = () => ({ ingredient: '', qty: '', unit: 'g', hint: '' });
 
-  const recipeDone = (d) => d.lines.length > 0 || d.saved;
+  const recipeDone = (d) => d.weighed || d.saved;
+  // Share of sales already weighed (bases left out: their sales are their dishes' sales).
   function recipeCovered() {
-    const all = recipe.data.dishes.reduce((n, d) => n + d.sold, 0);
-    const done = recipe.data.dishes.filter(recipeDone).reduce((n, d) => n + d.sold, 0);
+    const dishes = recipe.data.dishes.filter((d) => !d.base);
+    const all = dishes.reduce((n, d) => n + d.sold, 0);
+    const done = dishes.filter(recipeDone).reduce((n, d) => n + d.sold, 0);
     return all ? Math.round((done / all) * 100) : 0;
   }
+  const rowsFrom = (lines) => lines.map((l) => ({ ingredient: l.ingredient, qty: String(l.qty), unit: l.unit || '', hint: '' }));
+  // Not weighed yet: the old items and units, quantities blank with the old guess as a hint.
+  // A base line needs no weighing: one plate takes one base.
   function openDish(i) {
     recipe.index = i;
     const dish = recipe.data.dishes[i];
-    recipe.rows = dish.lines.length
-      ? dish.lines.map((l) => ({ ingredient: l.ingredient, qty: String(l.qty), unit: l.unit || '' }))
-      : [emptyRow(), emptyRow(), emptyRow()];
+    recipe.makes = String(dish.makes || 1);
+    if (dish.lines.length) recipe.rows = rowsFrom(dish.lines);
+    else if (dish.old && dish.old.length) {
+      recipe.rows = dish.old.map((l) => (l.ingredient.startsWith(BASE_PREFIX)
+        ? { ingredient: l.ingredient, qty: '1', unit: 'base', hint: '' }
+        : { ingredient: l.ingredient, qty: '', unit: l.unit || 'g', hint: l.qty === '' ? '' : `${l.qty}` }));
+    } else recipe.rows = [emptyRow(), emptyRow(), emptyRow()];
   }
   function nextOpenDish(from) {
     const list = recipe.data.dishes;
@@ -992,14 +1002,16 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     const dish = list[recipe.index];
     const doneCount = list.filter(recipeDone).length;
     const covered = recipeCovered();
+    const bases = list.filter((d) => d.base && d.kitchen === dish.kitchen && d.dish !== dish.dish).map((d) => d.dish);
     const own = recipe.data.stock.filter((x) => x.kitchen === dish.kitchen).map((x) => x.item);
     const others = recipe.data.stock.filter((x) => x.kitchen !== dish.kitchen).map((x) => x.item);
-    const names = [...new Set([...own, ...others])];
+    const names = [...new Set([...(dish.base ? [] : bases), ...own, ...others])];
+    const copyFrom = list.filter((d) => d !== dish && d.kitchen === dish.kitchen && Boolean(d.base) === Boolean(dish.base) && d.lines.length);
     const rows = recipe.rows.map((r, i) => `
       <div class="recipe-row">
         <input type="text" list="recipe-items" autocomplete="off" placeholder="Ingredient" data-recipe-row="${i}" data-field="ingredient"
           value="${escapeHtml(r.ingredient)}">
-        <input type="text" inputmode="decimal" autocomplete="off" placeholder="Qty" data-recipe-row="${i}" data-field="qty"
+        <input type="text" inputmode="decimal" autocomplete="off" placeholder="${r.hint ? escapeHtml(r.hint) : 'Qty'}" data-recipe-row="${i}" data-field="qty"
           value="${escapeHtml(r.qty)}">
         <input type="text" list="recipe-units" autocomplete="off" placeholder="Unit" data-recipe-row="${i}" data-field="unit"
           value="${escapeHtml(r.unit)}">
@@ -1008,15 +1020,24 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     return `
       <div class="page recipes">
         <div class="recipe-progress"><span style="width:${covered}%"></span></div>
-        <p class="hint">${doneCount} of ${list.length} dishes · ${covered}% of sales covered</p>
+        <p class="hint">${doneCount} of ${list.length} cards weighed · ${covered}% of sales weighed</p>
         <h1>${escapeHtml(dish.dish)}</h1>
-        <p class="hint">${escapeHtml(dish.kitchen)} · sold ${dish.sold} in 30 days${recipeDone(dish) ? ' · ✓ saved' : ''}</p>
-        <p><b>What goes into one plate?</b></p>
+        <p class="hint">${escapeHtml(dish.kitchen)} · ${dish.base
+          ? `shared by ${dish.usedBy.length} dishes: ${escapeHtml(dish.usedBy.join(', '))}`
+          : `sold ${dish.sold} in 30 days`}${recipeDone(dish) ? ' · ✓ weighed' : ''}</p>
+        <p><b>${dish.base ? 'Weigh what this base puts on one plate.' : 'Weigh what goes into one plate.'}</b>
+          Count pieces (buns, slices, eggs, pav, patties, bread) in nos; weigh everything else in g or ml. The faint number is last time's guess.</p>
+        ${recipe.rows.some((r) => r.ingredient.startsWith(BASE_PREFIX))
+          ? `<p class="hint">The base row covers the shared items (weighed once on its own card); add only what this dish has extra. If the dish leaves out part of the base, remove the base row and list everything.</p>` : ''}
+        ${copyFrom.length ? `<select id="recipe-copy" class="recipe-copy"><option value="">Copy from another dish…</option>
+          ${copyFrom.map((d) => `<option value="${escapeHtml(d.dish)}">${escapeHtml(d.dish)}</option>`).join('')}</select>` : ''}
         <div class="recipe-head"><span>Ingredient</span><span>Qty</span><span>Unit</span><span></span></div>
         ${rows}
         <datalist id="recipe-items">${names.map((n) => `<option value="${escapeHtml(n)}">`).join('')}</datalist>
         <datalist id="recipe-units">${RECIPE_UNITS.map((u) => `<option value="${u}">`).join('')}</datalist>
         <button type="button" class="btn wide" data-action="recipe-add-row">+ Add ingredient</button>
+        ${dish.base ? `<label class="recipe-makes">Easier to weigh a whole batch? It makes
+          <input type="text" inputmode="decimal" autocomplete="off" id="recipe-makes" value="${escapeHtml(recipe.makes)}"> plates</label>` : ''}
         ${recipe.error ? `<p class="waiting">Not saved: ${escapeHtml(errorText(recipe.error))}</p>` : ''}
         ${recipe.note ? `<p class="hint">${escapeHtml(recipe.note)}</p>` : ''}
         <button type="button" class="btn btn-primary wide" data-action="recipe-save" ${recipe.saving ? 'disabled' : ''}>
@@ -1271,15 +1292,28 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       const dish = recipe.data.dishes[recipe.index];
       const kitchenStock = recipe.data.stock.filter((x) => x.kitchen === dish.kitchen);
       const lines = [];
+      // Only a base is weighed as a batch; a dish card is always one plate.
+      const makes = dish.base ? parseQty(recipe.makes) : 1;
+      if (!makes) {
+        recipe.note = 'Fill how many plates this makes (1 if you weighed one plate).';
+        render();
+        return;
+      }
+      const baseNames = recipe.data.dishes.filter((d) => d.base).map((d) => d.dish);
       for (const r of recipe.rows) {
         const name = r.ingredient.trim().replace(/\s+/g, ' ');
         const unit = r.unit.trim();
-        if (!name && !r.qty.trim() && !unit) continue; // an empty row
+        if (!name && !r.qty.trim()) continue; // an empty row (its unit may be the default g)
         const qty = parseQty(r.qty);
         if (!name || !qty || !unit) {
           recipe.note = `Fill all three boxes for ${name || 'each ingredient'} (ingredient, quantity, unit), or remove the row.`;
           render();
           return;
+        }
+        const base = baseNames.find((b) => b.toLowerCase() === name.toLowerCase());
+        if (base) {
+          lines.push({ ingredient: base, qty, unit: 'base' });
+          continue;
         }
         // A name typed in a different case still matches the stock list.
         const known = kitchenStock.find((x) => x.item.toLowerCase() === name.toLowerCase());
@@ -1296,13 +1330,14 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       recipe.saving = true;
       render();
       try {
-        const reply = await api.send({ action: 'saveRecipe', dish: dish.dish, kitchen: dish.kitchen, lines });
+        const reply = await api.send({ action: 'saveRecipe', dish: dish.dish, kitchen: dish.kitchen, lines, makes });
         if (!reply.ok) throw new Error(reply.error || 'bad_response');
         dish.lines = lines.map(({ ingredient, qty, unit }) => ({ ingredient, qty, unit }));
+        dish.makes = makes;
         dish.saved = true;
         lines.filter((l) => l.isNew).forEach((l) => recipe.data.stock.push({ item: l.ingredient, kitchen: dish.kitchen, unit: l.unit }));
         recipe.error = null;
-        recipe.note = `✓ ${dish.dish} saved · ${recipeCovered()}% of sales covered`;
+        recipe.note = `✓ ${dish.dish} saved · ${recipeCovered()}% of sales weighed`;
         openDish(nextOpenDish(recipe.index));
       } catch (e) {
         recipe.error = e.message;
@@ -1505,6 +1540,21 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     if (orderId) {
       state.orderEdits[orderId] = state.orderEdits[orderId] || {};
       state.orderEdits[orderId][event.target.dataset.orderItem] = event.target.value;
+      return;
+    }
+    if (event.target.id === 'recipe-makes') {
+      recipe.makes = event.target.value;
+      return;
+    }
+    // Copy from another dish: its weighed rows replace this card's, to edit (swap the patty).
+    if (event.target.id === 'recipe-copy') {
+      const from = recipe.data.dishes.find((d) => d.dish === event.target.value);
+      if (from) {
+        recipe.rows = rowsFrom(from.lines);
+        if (from.base) recipe.makes = String(from.makes || 1);
+        recipe.note = `Copied from ${from.dish}: change what differs, then Save.`;
+        render();
+      }
       return;
     }
     const recipeRow = event.target.dataset && event.target.dataset.recipeRow;

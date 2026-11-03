@@ -8,7 +8,11 @@ import { newTickets } from './tickets.js';
 
 const KEYS = { settings: 'cb.settings', menu: 'cb.menu', sync: 'cb.sync', data: 'cb.data', sheetToday: 'cb.sheetToday', dashboard: 'cb.dashboard' };
 const KEEP_DASHBOARD_DAYS = 14;
-const DEFAULT_SETTINGS = { outlet: 'Bhukum', scriptUrl: '', passcode: '' };
+// Until its sheet names another café, a phone is a Bhukum counter: tables G1-G9 and F1-F4,
+// with kitchen tickets for Fresco and Pancham.
+const DEFAULT_SETTINGS = {
+  outlet: 'Bhukum', scriptUrl: '', passcode: '', tables: [['Ground floor', 'G', 9], ['First floor', 'F', 4]], tickets: true,
+};
 const DEFAULT_SYNC = { lastError: null, lastSuccessAt: null };
 const KEEP_DAYS = 7;
 
@@ -38,8 +42,10 @@ const ticketMessages = (tickets) => tickets.map((ticket) => ({ action: 'addTicke
 const orderLabel = (o) => (o.table ? `Table ${o.table}` : `Order ${o.tag}`);
 
 // Works out which items the kitchens have not been told about yet, remembers them on the
-// order, and returns the messages that tell them.
-function sendToKitchens(order, time) {
+// order, and returns the messages that tell them. A café without a kitchen phone
+// (settings.tickets false) tells nobody.
+function sendToKitchens(order, time, ticketsOn) {
+  if (!ticketsOn) return [];
   const { tickets, sent } = newTickets(order.lines, order.sent ?? {}, { label: orderLabel(order), time, idPrefix: newMid() });
   order.sent = sent;
   return ticketMessages(tickets);
@@ -57,6 +63,7 @@ export function createStore(storage) {
   // `open` holds orders kept for people who pay after eating. They are not bills yet.
   // `kitchen` is a separate queue for kitchen tickets, sent before anything else so the
   // kitchens hear about an order as fast as possible.
+  const ticketsOn = () => read(KEYS.settings, {}).tickets !== false;
   const readData = () => ({ bills: [], queue: [], rejected: [], open: [], kitchen: [], ...read(KEYS.data, {}) });
   const writeData = (data) => write(KEYS.data, data);
 
@@ -119,8 +126,10 @@ export function createStore(storage) {
       // Whatever the kitchens have not had yet: everything for a counter bill, only the
       // last additions for a table.
       const label = order ? orderLabel(order) : `Bill #${bill.billNo}`;
-      const { tickets } = newTickets(bill.lines, order?.sent ?? {}, { label, time: bill.time, idPrefix: newMid() });
-      data.kitchen.push(...ticketMessages(tickets));
+      if (ticketsOn()) {
+        const { tickets } = newTickets(bill.lines, order?.sent ?? {}, { label, time: bill.time, idPrefix: newMid() });
+        data.kitchen.push(...ticketMessages(tickets));
+      }
       writeData(data);
     },
 
@@ -149,7 +158,7 @@ export function createStore(storage) {
       if (existing) {
         existing.lines = lines;
         if (table) existing.table = table;
-        data.kitchen.push(...sendToKitchens(existing, time));
+        data.kitchen.push(...sendToKitchens(existing, time, ticketsOn()));
         data.queue.push(tableMessage(existing));
         writeData(data);
         return existing.id;
@@ -161,7 +170,7 @@ export function createStore(storage) {
           if (same) same.qty += line.qty;
           else atTable.lines.push({ ...line });
         });
-        data.kitchen.push(...sendToKitchens(atTable, time));
+        data.kitchen.push(...sendToKitchens(atTable, time, ticketsOn()));
         data.queue.push(tableMessage(atTable));
         writeData(data);
         return atTable.id;
@@ -169,7 +178,7 @@ export function createStore(storage) {
       const tag = Math.max(0, ...data.open.map((o) => o.tag)) + 1;
       const order = { id: `open-${Date.now()}-${tag}`, tag, time, lines, table };
       data.open.push(order);
-      data.kitchen.push(...sendToKitchens(order, time));
+      data.kitchen.push(...sendToKitchens(order, time, ticketsOn()));
       data.queue.push(tableMessage(order));
       writeData(data);
       return order.id;

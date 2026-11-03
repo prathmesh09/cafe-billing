@@ -199,8 +199,9 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   async function refreshMenu() {
     state.settingsNote = null;
     let items;
+    let outlet;
     try {
-      items = await api.getMenu();
+      ({ items, outlet } = await api.getMenu());
     } catch (e) {
       state.menuError = e.message; // the saved menu is left exactly as it was
       refresh();
@@ -209,6 +210,8 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     state.menuError = null;
     try {
       store.saveMenu(items, new Date().toISOString());
+      // The sheet names the café: its bills, its tables, whether a kitchen phone cooks.
+      if (outlet) store.saveSettings({ outlet: outlet.name, tables: outlet.tables, tickets: outlet.tickets });
     } catch {
       state.settingsNote = STORAGE_FAILED;
     }
@@ -267,8 +270,6 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       <div class="grid">${group.items.map((i) => itemButton(i, qtyByKey, false)).join('')}</div>`).join('');
   }
 
-  // Your tables: 9 on the ground floor (G1-G9) and 4 on the first floor (F1-F4).
-  const FLOORS = [['Ground floor', 'G', 9], ['First floor', 'F', 4]];
 
   const openOrder = () => store.getOpenOrders().find((o) => o.id === state.openId) ?? null;
   const orderName = (o) => (o.table ? `Table ${o.table}` : `Order ${o.tag}`);
@@ -336,7 +337,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     return `
       <div class="page picker">
         <h1>${moving ? `Move ${escapeHtml(orderName(moving))} to…` : 'Which table?'}</h1>
-        ${FLOORS.map(([name, letter, count]) => `
+        ${store.getSettings().tables.map(([name, letter, count]) => `
           <h2>${name}</h2>
           <div class="tables">
             ${Array.from({ length: count }, (_, i) => `${letter}${i + 1}`).map((t) => `
@@ -365,7 +366,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     const mins = minutesSince(o.time);
     const sent = o.sent ?? {};
     const lines = o.lines.map((l) => {
-      const toKitchen = l.kitchen && l.kitchen !== 'Counter';
+      const toKitchen = store.getSettings().tickets && l.kitchen && l.kitchen !== 'Counter';
       const flag = toKitchen ? ((sent[lineKey(l)] ?? 0) >= l.qty ? '<small class="ok">sent</small>' : '<small class="late">not sent</small>') : '';
       return `<p class="bill-line"><span>${l.qty} × ${escapeHtml(l.item)} ${flag}</span><span>${rupees(l.qty * l.price)}</span></p>`;
     }).join('');
@@ -588,7 +589,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
           <div class="top">${sum.topItems.map((t) => `
             <p class="bill-line"><span>${escapeHtml(t.item)} <small>× ${t.qty}</small></span><strong>${rupees(t.amount)}</strong></p>`).join('')}
           </div>
-          <p class="hint">Tea, cigarettes and other counter items: ${rupees(sum.counterTotal)}${sum.total > 0 ? ` (${Math.round((sum.counterTotal / sum.total) * 100)}% of sales)` : ''}</p>`}
+          ${sum.counterTotal > 0 ? `<p class="hint">Tea, cigarettes and other counter items: ${rupees(sum.counterTotal)} (${Math.round((sum.counterTotal / sum.total) * 100)}% of sales)</p>` : ''}`}
         ${bills.length === 0 ? '' : `<h2>Bills</h2><div class="bills">${bills.map(billRow).join('')}</div>`}
       </div>`;
   }
@@ -1071,7 +1072,9 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     if (redrawn) redrawn.scrollTop = scrollTop;
     const active = state.view === 'done' ? 'billing' : state.view;
     navEl.hidden = state.view === 'kitchen' || state.view === 'recipes' || ((state.view === 'stock' || state.view === 'orders') && Boolean(kitchenName()));
-    navEl.innerHTML = NAV.map(([view, label]) => `
+    // A café without a kitchen phone (Sundae) keeps no stock counts yet.
+    const nav = store.getSettings().tickets ? NAV : NAV.filter(([view]) => view !== 'stock');
+    navEl.innerHTML = nav.map(([view, label]) => `
       <button type="button" class="nav-btn${view === active ? ' is-active' : ''}"
         data-action="nav" data-view="${view}">${label}</button>`).join('');
   }

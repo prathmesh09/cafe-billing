@@ -20,6 +20,16 @@ const usableItem = (i) => Boolean(i)
   && typeof i.category === 'string'
   && Number.isFinite(i.price) && i.price > 0;
 
+// The café the sheet says this phone belongs to (see OUTLETS in apps-script/Code.gs), or
+// null when it says nothing usable, so an older sheet script leaves the phone as it is.
+const usableTables = (t) => Array.isArray(t) && t.length > 0 && t.every((f) => Array.isArray(f) && f.length === 3
+  && typeof f[0] === 'string' && typeof f[1] === 'string' && f[1] !== '' && Number.isInteger(f[2]) && f[2] > 0);
+function usableOutlet(o) {
+  if (!o || typeof o !== 'object' || typeof o.name !== 'string' || !o.name.trim()) return null;
+  if (!usableTables(o.tables) || typeof o.tickets !== 'boolean') return null;
+  return { name: o.name.trim(), tables: o.tables, tickets: o.tickets };
+}
+
 export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = () => true, fb = null }) {
   async function send(message) {
     if (fb) {
@@ -83,7 +93,7 @@ export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = ()
     if (!reply.ok) throw new Error(reply.error || 'bad_response');
     if (!Array.isArray(reply.items) || !reply.items.every(usableItem)) throw new Error('bad_response');
     if (reply.items.length === 0) throw new Error('empty_menu');
-    return reply.items;
+    return { items: reply.items, outlet: usableOutlet(reply.outlet) };
   }
 
   // Today's bills for one outlet, from every phone, as the sheet has them.

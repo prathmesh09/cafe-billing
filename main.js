@@ -45,7 +45,10 @@ function deviceId() {
 
 let api = null;
 const fb = firebaseAvailable() ? getFirebaseClient({
-  getPass: (kitchen) => api.getFirebasePass(kitchen, deviceId()),
+  // Firebase holds Bhukum's live orders only. A café without a kitchen phone never asks
+  // its sheet for a pass, which would hold the sheet's lock on every table change.
+  getPass: (kitchen) => (store.getSettings().tickets === false
+    ? Promise.reject(new Error('no_firebase')) : api.getFirebasePass(kitchen, deviceId())),
   getKitchen: () => store.getSettings().kitchen || '',
 }) : null;
 api = createApi({

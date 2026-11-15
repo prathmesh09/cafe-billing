@@ -12,6 +12,8 @@
 //                   or a deployment that is not shared with "Anyone" ends up here too.
 //   bad_response    something answered, but not the sheet script
 
+import { BHUKUM } from './store.js';
+
 const WEB_ADDRESS = /^https?:\/\//i;
 
 const usableItem = (i) => Boolean(i)
@@ -21,7 +23,10 @@ const usableItem = (i) => Boolean(i)
   && Number.isFinite(i.price) && i.price > 0;
 
 // The café the sheet says this phone belongs to (see OUTLETS in apps-script/Code.gs), or
-// null when it says nothing usable, so an older sheet script leaves the phone as it is.
+// null when what it says is damaged, which leaves the phone as it is. A sheet that names
+// no café at all is Bhukum's, whose script predates the names: saying so (instead of
+// leaving the phone as it is) is what turns a phone that was once on another café's
+// sheet back into a Bhukum phone.
 const usableTables = (t) => Array.isArray(t) && t.length > 0 && t.every((f) => Array.isArray(f) && f.length === 3
   && typeof f[0] === 'string' && typeof f[1] === 'string' && f[1] !== '' && Number.isInteger(f[2]) && f[2] > 0);
 function usableOutlet(o) {
@@ -93,7 +98,8 @@ export function createApi({ fetch, getSettings, timeoutMs = 15000, isOnline = ()
     if (!reply.ok) throw new Error(reply.error || 'bad_response');
     if (!Array.isArray(reply.items) || !reply.items.every(usableItem)) throw new Error('bad_response');
     if (reply.items.length === 0) throw new Error('empty_menu');
-    return { items: reply.items, outlet: usableOutlet(reply.outlet) };
+    const outlet = reply.outlet === undefined || reply.outlet === null ? { ...BHUKUM } : usableOutlet(reply.outlet);
+    return { items: reply.items, outlet };
   }
 
   // Today's bills for one outlet, from every phone, as the sheet has them.

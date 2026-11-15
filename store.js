@@ -10,8 +10,9 @@ const KEYS = { settings: 'cb.settings', menu: 'cb.menu', sync: 'cb.sync', data: 
 const KEEP_DASHBOARD_DAYS = 14;
 // Until its sheet names another café, a phone is a Bhukum counter: tables G1-G9 and F1-F4,
 // with kitchen tickets for Fresco and Pancham.
+export const BHUKUM = { name: 'Bhukum', tables: [['Ground floor', 'G', 9], ['First floor', 'F', 4]], tickets: true };
 const DEFAULT_SETTINGS = {
-  outlet: 'Bhukum', scriptUrl: '', passcode: '', tables: [['Ground floor', 'G', 9], ['First floor', 'F', 4]], tickets: true,
+  outlet: BHUKUM.name, scriptUrl: '', passcode: '', tables: BHUKUM.tables, tickets: BHUKUM.tickets,
 };
 const DEFAULT_SYNC = { lastError: null, lastSuccessAt: null };
 const KEEP_DAYS = 7;
@@ -70,6 +71,26 @@ export function createStore(storage) {
   return {
     getSettings: () => ({ ...DEFAULT_SETTINGS, ...read(KEYS.settings, {}) }),
     saveSettings: (partial) => write(KEYS.settings, { ...read(KEYS.settings, {}), ...partial }),
+
+    // A scanned setup code: { scriptUrl, passcode, kitchen }. The same sheet again (a new
+    // passcode, or counter to kitchen) only updates the settings. Another café's sheet
+    // must not inherit anything: bills and tables waiting here would be uploaded into the
+    // wrong café's sheet, so the phone stays where it is ('unsent') until they have gone.
+    // Then the old café's name, tables, menu, open tables and bills are all forgotten;
+    // the new sheet sends its own.
+    connect(code) {
+      const old = read(KEYS.settings, {});
+      if (!old.scriptUrl || old.scriptUrl === code.scriptUrl) {
+        write(KEYS.settings, { ...old, ...code });
+        return 'ok';
+      }
+      const data = readData();
+      if (data.queue.length + data.kitchen.length > 0) return 'unsent';
+      writeData({ ...data, bills: [], open: [] });
+      [KEYS.menu, KEYS.sheetToday, KEYS.dashboard, KEYS.sync].forEach((key) => storage.removeItem(key));
+      write(KEYS.settings, { ...code });
+      return 'ok';
+    },
 
     getMenu() {
       const menu = read(KEYS.menu, null);

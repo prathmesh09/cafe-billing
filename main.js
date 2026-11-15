@@ -88,8 +88,14 @@ if (window.location.hash.startsWith('#c=')) {
     arrival = 'none';
   } else if (fromCode) {
     try {
-      store.saveSettings(fromCode);
-      arrival = 'connected';
+      if (store.connect(fromCode) === 'unsent') {
+        // Another café's code, scanned while this phone still holds bills or tables for
+        // its own café: they would be uploaded into the other café's sheet.
+        window.alert(`This phone still has ${unsentCount(store)} bills or orders to upload for ${store.getSettings().outlet}. Open the app as usual, wait until they have uploaded, then scan this code again.`);
+        arrival = 'none';
+      } else {
+        arrival = 'connected';
+      }
     } catch {
       // storage refused; the connect screen will say so
     }

@@ -6,7 +6,7 @@ import { emptyDraft, lineKey, addItem, changeQty, draftTotal, localDate, randomS
 import { kitchens, groupByCategory, searchItems } from './menu.js';
 import { pushAvailable, alertsOn, startPush, askForAlerts, onAlert } from './push.js';
 import { ringTones, ringVibration } from './ring.js';
-import { stockEntry, loadStockDraft, saveStockDraft, parseQty, closeMatch } from './stock.js';
+import { stockEntry, loadStockDraft, saveStockDraft, parseQty, closeMatch, measured, valueFor, lastText, countProgress, freshStockDrafts } from './stock.js';
 
 const ERROR_TEXT = {
   bad_passcode: 'Passcode not accepted',
@@ -749,7 +749,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       <div class="page kitchen">
         <h1>${name} kitchen <small>${state.tickets.length} waiting</small></h1>
         ${alerts}
-        <button type="button" class="btn btn-dark wide" data-action="open-stock">📦 Stock count / delivery</button>
+        <button type="button" class="btn btn-dark wide" data-action="open-stock">📦 Stock count</button>
         ${state.kitchenError ? `<p class="waiting">Cannot reach the sheet right now. Trying again…</p>` : ''}
         ${cards || '<p class="empty">No orders right now.</p>'}
       </div>`;
@@ -764,9 +764,12 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
   const phoneStorage = () => window.localStorage;
   const newStockDraft = () => ({ id: `STK-${Date.now()}-${randomSuffix()}`, values: {} });
   // One draft per kind, so tapping the other tab never wipes a half-typed count.
+  // Deliveries are no longer typed on their own screen (a count that went up is a delivery),
+  // so the phone always counts; an old "Received" draft is kept but not shown.
   const stock = (() => {
     try {
-      return loadStockDraft(phoneStorage()) || { kind: 'Count', drafts: {} };
+      const saved = freshStockDrafts(loadStockDraft(phoneStorage()) || { kind: 'Count', drafts: {} }, Date.now());
+      return { ...saved, kind: 'Count' };
     } catch {
       return { kind: 'Count', drafts: {} };
     }
@@ -879,12 +882,30 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
         data-sold-as="${escapeHtml(m.item)}">${rupees(m.price)}</button>`).join('')}</span>`;
   }
 
+  // One row: the name, the last count, and the boxes. A measured item (fries, paneer,
+  // milk) has two boxes: full packs, and the open one in g or ml.
+  function stockRow(i, values) {
+    const value = values[i.item];
+    const box = (part, text, mode) => `
+      <input type="text" inputmode="${mode}" autocomplete="off" data-stock-item="${escapeHtml(i.item)}"${part ? ` data-part="${part}"` : ''}
+        value="${escapeHtml(text ?? '')}" placeholder="–">`;
+    const inputs = measured(i)
+      ? `${box('full', value && typeof value === 'object' ? value.full : '', 'numeric')}<span class="stock-unit">full ${escapeHtml(i.unit || '')}</span>
+         ${box('open', value && typeof value === 'object' ? value.open : '', 'numeric')}<span class="stock-unit">${escapeHtml(i.recipeUnit)} open</span>`
+      : `${box('', typeof value === 'string' ? value : '', i.countAs === 'pieces' ? 'numeric' : 'decimal')}<span class="stock-unit">${escapeHtml(i.unit || '')}</span>`;
+    const filled = countProgress([i], values).done === 1;
+    return `
+      <div class="stock-row${filled ? ' is-done' : ''}">
+        <div class="stock-top"><span class="stock-name">${filled ? '✓ ' : ''}${escapeHtml(i.item)}</span>${soldAsPicker(i)}</div>
+        <div class="stock-last">${escapeHtml(lastText(i, new Date()))}</div>
+        <div class="stock-inputs">${inputs}
+          ${i.last ? `<button type="button" class="chip" data-action="stock-same" data-item="${escapeHtml(i.item)}">Same as last</button>` : ''}
+        </div>
+      </div>`;
+  }
+
   function stockView() {
-    const counting = stock.kind === 'Count';
     const values = stockDraft().values;
-    const kindButton = (kind, label) => `
-      <button type="button" class="tab${stock.kind === kind ? ' is-active' : ''}"
-        data-action="stock-kind" data-kind="${kind}">${label}</button>`;
     let body;
     if (!state.stockItems) {
       body = state.stockError
@@ -894,40 +915,29 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     } else if (state.stockItems.length === 0) {
       body = '<p class="empty">No stock items for this kitchen yet. The owner adds them on the "Stock items" tab.</p>';
     } else {
-      // Counting shows only what is due today (daily items, and the rest on their days).
+      // Only what is due today (daily items, and the rest on their day), unless asked for all.
       const due = state.stockItems.filter((i) => i.due !== false);
-      const shown = counting && !state.stockShowAll ? due : state.stockItems;
+      const shown = state.stockShowAll ? state.stockItems : due;
       const more = state.stockItems.length - due.length;
+      const progress = countProgress(shown, values);
       body = `
-        ${counting ? `<p class="hint">${state.stockShowAll ? `All ${state.stockItems.length} items`
-    : `Due today: ${due.length} item${due.length === 1 ? '' : 's'}`}
-          ${more > 0 ? `<button type="button" class="chip" data-action="stock-show-all">${state.stockShowAll ? 'Only due today' : `Show all (${more} more)`}</button>` : ''}</p>` : ''}
+        <p class="hint"><strong id="stock-progress">${progress.done} of ${progress.total} counted</strong>
+          ${more > 0 ? `<button type="button" class="chip" data-action="stock-show-all">${state.stockShowAll ? 'Only due today' : `Show all (${more} more)`}</button>` : ''}</p>
         ${shown.length === 0 ? '<p class="empty">Nothing to count today ✓</p>' : ''}
-        <div class="stock-list">
-          ${shown.map((i) => `
-            <label class="stock-row">
-              <span class="stock-name">${escapeHtml(i.item)}${soldAsPicker(i)}</span>
-              <input type="text" inputmode="decimal" autocomplete="off" data-stock-item="${escapeHtml(i.item)}"
-                value="${escapeHtml(values[i.item] ?? '')}" placeholder="–">
-              <span class="stock-unit">${escapeHtml(i.unit || '')}</span>
-            </label>`).join('')}
-        </div>
+        <div class="stock-list">${shown.map((i) => stockRow(i, values)).join('')}</div>
         ${state.stockError ? `<p class="waiting">Not saved: ${escapeHtml(errorText(state.stockError))} The numbers are kept; press Save again.</p>` : ''}
         ${state.stockNote ? `<p class="hint">${escapeHtml(state.stockNote)}</p>` : ''}
         <button type="button" class="btn btn-primary wide" data-action="stock-save" ${state.stockSaving ? 'disabled' : ''}>
-          ${state.stockSaving ? 'Saving…' : counting ? 'Save count' : 'Save delivery'}</button>`;
+          ${state.stockSaving ? 'Saving…' : 'Save count'}</button>`;
     }
     return `
       <div class="page stock">
-        <h1>${escapeHtml(stockPlace())} stock</h1>
+        <h1>${escapeHtml(stockPlace())} stock count</h1>
         <button type="button" class="btn btn-dark wide" data-action="open-orders">${(state.orders || []).some(myTurn)
     ? `📋 Orders to check: ${(state.orders || []).filter(myTurn).length}` : '📋 Orders · ＋ start one'}</button>
         ${kitchenName() && state.tickets.length ? `<button type="button" class="btn btn-primary wide stock-orders" data-action="stock-back">
           🔔 ${state.tickets.length} order${state.tickets.length === 1 ? '' : 's'} waiting: back to orders</button>` : ''}
-        <div class="tabs stock-kinds">${kindButton('Count', 'Count what is left')}${kindButton('Received', 'Delivery came in')}</div>
-        <p class="hint">${counting
-    ? 'Type what is on the shelf now. Leave an item blank if you did not count it.'
-    : 'Type only what just arrived.'}</p>
+        <p class="hint">Count what is on the shelf now. If a delivery came, count it in too. You can save part and finish later.</p>
         ${body}
         ${kitchenName() ? '<button type="button" class="btn wide" data-action="stock-back">Back to orders</button>' : ''}
       </div>`;
@@ -1362,6 +1372,13 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       }
       if (state.view === 'stock') render();
     },
+    'stock-same'(el) {
+      const it = (state.stockItems || []).find((i) => i.item === el.dataset.item);
+      if (!it || !it.last) return;
+      stockDraft().values[it.item] = valueFor(it, Number(it.last.qty));
+      keepStockDraft();
+      render();
+    },
     'stock-show-all'() {
       state.stockShowAll = !state.stockShowAll;
       render();
@@ -1452,14 +1469,6 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
       state.view = 'kitchen';
       render();
     },
-    'stock-kind'(el) {
-      if (stock.kind === el.dataset.kind) return;
-      stock.kind = el.dataset.kind;
-      keepStockDraft();
-      state.stockNote = null;
-      state.stockError = null;
-      render();
-    },
     async 'stock-save'() {
       const draft = stockDraft();
       const kind = stock.kind;
@@ -1467,7 +1476,7 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
         items: state.stockItems || [], values: draft.values, now: new Date() });
       if (!entry) {
         state.stockError = null;
-        state.stockNote = 'Type a number for at least one item first.';
+        state.stockNote = 'Fill in at least one item first.';
         render();
         return;
       }
@@ -1489,9 +1498,11 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
           state.stockSaving = false;
           state.view = 'orders';
           render();
+          loadStockItems();
           return;
         }
         if (kind === 'Count') state.stockNote += ' · Nothing needs ordering.';
+        loadStockItems();
       } catch (e) {
         state.stockError = e.message;
       }
@@ -1568,8 +1579,21 @@ export function startUi({ store, api, sync, root, arrival = 'none', fb = null })
     }
     const stockItem = event.target.dataset && event.target.dataset.stockItem;
     if (stockItem) {
-      stockDraft().values[stockItem] = event.target.value;
+      const values = stockDraft().values;
+      const part = event.target.dataset.part;
+      if (part) {
+        const was = values[stockItem] && typeof values[stockItem] === 'object' ? values[stockItem] : { full: '', open: '' };
+        values[stockItem] = { ...was, [part]: event.target.value };
+      } else {
+        values[stockItem] = event.target.value;
+      }
       keepStockDraft();
+      const progressEl = root.querySelector('#stock-progress');
+      if (progressEl && state.stockItems) {
+        const shown = state.stockShowAll ? state.stockItems : state.stockItems.filter((i) => i.due !== false);
+        const p = countProgress(shown, values);
+        progressEl.textContent = `${p.done} of ${p.total} counted`;
+      }
       return;
     }
     if (event.target.id !== 'search') return;
